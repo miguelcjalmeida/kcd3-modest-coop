@@ -132,3 +132,66 @@ class with no matching decrease (nil `prevCount` - e.g. untracked food) is
 now correctly just skipped, with no misattribution - a side benefit that
 also cleanly resolves the earlier-documented food/consumables gap instead
 of letting it corrupt an unrelated event.
+
+## A second, deeper bug: spawning ignored the requested class entirely
+
+Fixing the pairing bug above didn't fix the real 2-player session - drops
+kept arriving as unrelated random clothing. Traced with a blunt but
+decisive test: spawn the exact same class 10 times in a row, same machine,
+same session, no network involved at all
+(`ItemSwap_TestSpawn("2264f217-...", 1, 1.0)` x10). Result: 10 different
+items across every clothing slot - caps, coats, tunics, boots, shoes,
+pants, coifs. Then the same test with the class already believed to be a
+safe, unique control item (the dice, verified consistent many times before
+- but only ever for *detecting* an existing dropped die, never for
+*creating* a new one) came back as coats, pants, boots, tunics. Even the
+player's own money class, spawned through the placer, came back as a
+random clothing piece.
+
+Root cause, confirmed by reading the placer NPC's own inventory
+immediately after `CreateItem`, before any placement step ran: **a bare,
+freshly-spawned `class="NPC"` entity gets its inventory auto-outfitted
+with random civilian clothing by the engine itself**, and this clobbers
+whatever `CreateItem` was actually asked to create. This has been present
+since the very first Phase 0 success - that test was declared a win
+because *a* named ground item appeared, without ever checking it matched
+the requested class. It never did; there was just no comparison point
+until two independent players' items visibly disagreed.
+
+`ItemManager.CreateItem` (the standalone item-handle constructor the
+reference project's API notes describe, used instead of `inventory:
+CreateItem` for equipping) does **not exist** in this retail build
+(`type(ItemManager.CreateItem) == "nil"`) - that documented alternative is
+a dead end here. `ItemManager`'s real exposed functions in this build:
+`AddOnEquipBuff, GetItem, GetItemName, GetItemOwner, GetItemUIName,
+IsItemOversized, RemoveItem` (dumped live via `pairs(ItemManager)`) - no
+creation function among them. `inventory:CreateItem` is genuinely the only
+item-creation entry point available.
+
+**Fix, verified live and now in production code**: create on the LOCAL
+PLAYER's own inventory instead of a placer NPC - confirmed to correctly
+respect the requested class every time (tested explicitly against the
+dice class, resolved back exactly). The original Phase 0 "player-based
+placement fails" conclusion was itself wrong: that test passed
+`CreateItem`'s boolean return value into `PlaceItem` instead of the real
+item wuid - the exact same mistake the placer version made, just never
+re-examined once the placer path appeared to work. With the real wuid
+(found by diffing `GetInventoryTable()` before/after `CreateItem`, since
+the return value is a bare success flag, not a handle),
+`player.human:PlaceItem(wuid, player.id, false)` drops the exact right
+item on the ground next to the player and cleanly leaves their own
+inventory (confirmed: no leftover duplicate wuid). No placer entity, no
+`Hide()`, no `System.RemoveEntity` cleanup needed at all - meaningfully
+simpler than the design it replaces, not just more correct.
+
+Verified in the real mod code (not ad-hoc RC snippets) after redeploying:
+`ItemSwap_TestSpawn` with the dice class, 5 times in a row, produced
+`prepadeni_dieBarn0003xx` every single time.
+
+**Remaining open question, deliberately not chased further today**: is
+"a bare NPC auto-outfits itself" *the whole* explanation, or does
+`inventory:CreateItem` also behave oddly for some non-clothing categories
+regardless of target? The player-based fix sidesteps the question
+entirely (no NPC involved at all), so it doesn't block real use, but it's
+worth keeping in mind if a future feature ever needs to create an item on
+an NPC/ghost-like entity again.

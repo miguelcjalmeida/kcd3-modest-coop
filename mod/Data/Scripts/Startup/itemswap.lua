@@ -1,35 +1,27 @@
--- ItemSwap - Phase 0 spike script
+-- ItemSwap
 --
--- Purpose: verify, on the RETAIL build launched with -devmode, the riskiest
--- assumptions in the plan before any networking or real drop/pickup logic
--- is written:
---   (a) this pak actually loads (ITEMSWAP-LOADED must appear in kcd.log) - PASSED
---   (b) some entity's inventory/human components can mint and place a world
---       item, with no ghost/NPC persisting in this design.
+-- Item spawning history (the short version - see docs/AGENT-FINDINGS.md for
+-- the full live-debugging trail): the original design minted items via a
+-- hidden, momentary NPC "placer" entity (System.SpawnEntity{class="NPC"} +
+-- CreateItem + PlaceItem), which looked like it worked in solo testing - a
+-- real, named ground item always appeared. The first real 2-player session
+-- exposed the problem: the CLASS of what appeared was essentially random
+-- civilian clothing, regardless of what class was actually requested (money,
+-- a unique dice item, anything) - confirmed live by reading the placer's own
+-- inventory immediately after CreateItem, before any placement step even
+-- ran. A bare, freshly-spawned NPC entity apparently gets its inventory
+-- auto-outfitted with random civilian clothing by the engine itself, which
+-- clobbers whatever CreateItem was actually asked to make.
 --
--- (b) was spiked live via RC and the FIRST attempt (using the LOCAL PLAYER's
--- own player.inventory/player.human) FAILED: CreateItem just added a second
--- copy of the item into the player's own inventory; PlaceItem never produced
--- a ground entity. Confirmed by re-probing inventory afterward (an extra
--- wuid of the same class appeared) and by scanning all entities within 15m
--- (no new PickableItem anywhere).
---
--- The WORKING design, verified live (kcd.log [DIAG6]/[DIAG7]): spawn a
--- plain `class="NPC"` entity via System.SpawnEntity (has real .inventory/
--- .human components), Hide(true) it immediately so it's never visible for
--- even a frame, mint the item into ITS inventory, then look up the minted
--- item's real wuid via GetInventoryTable() (CreateItem's return value is a
--- boolean success flag, NOT an item handle - passing it straight into
--- PlaceItem is what made the first attempt do nothing useful) before calling
--- PlaceItem. This produced a real, named ground PickableItem synchronously -
--- no deferred-tick finalize step was needed in testing, unlike the ghost-
--- based two-phase approach this project intentionally does not reuse.
--- The placer entity is deleted immediately after. It exists for a single
--- Lua call, hidden the whole time - never a visible/persistent "ghost".
---
--- Everything here is still throwaway/diagnostic. Phase 1 replaces
--- ItemSwap_TestSpawn with the real poll-based drop detector wired to the
--- network layer.
+-- The fix, verified live: skip the placer entirely and use the LOCAL
+-- PLAYER's own inventory/human components directly. The very first Phase 0
+-- attempt at this had been declared a failure - but that test passed
+-- CreateItem's boolean return value into PlaceItem instead of the real item
+-- wuid (the same mistake the placer version made too, just never re-checked
+-- once the placer path "worked"). With the real wuid, `player.human:
+-- PlaceItem(wuid, player.id, false)` correctly drops the exact requested
+-- item on the ground next to the player, and it cleanly leaves the player's
+-- own inventory (confirmed: no leftover duplicate).
 
 System.LogAlways("ITEMSWAP-LOADED")
 
@@ -57,13 +49,17 @@ function ItemSwap_ProbeInventory()
     end
 end
 
--- ===== Spawn: mint + place an item via a hidden, momentary NPC placer =====
--- Verified live (docs/SPIKE-RESULTS.md #4). The placer is hidden the entire
--- time it exists (a handful of Lua statements, no rendered frame) and is
--- removed immediately after - it is a mechanism, never a visible "ghost".
+-- ===== Spawn: mint + place an item via the LOCAL PLAYER directly =====
+-- Verified live (docs/AGENT-FINDINGS.md): no placer entity needed at all.
+-- `pos` is accepted for the caller's own nearby-item search radius, but the
+-- item actually lands wherever PlaceItem puts it relative to the player
+-- (confirmed close enough to the player to always be within a few meters).
 -- Returns the found ground entity, or nil + an error string.
 function ItemSwap_SpawnItemAt(cls, health, amount, pos)
     if not pos then return nil, "no target position" end
+    if not player or not player.inventory or not player.human then
+        return nil, "no local player/inventory/human"
+    end
 
     -- Snapshot existing PickableItem ids near the target BEFORE minting, so
     -- we can tell "the one that just appeared" apart from anything already
@@ -78,28 +74,20 @@ function ItemSwap_SpawnItemAt(cls, health, amount, pos)
 
     local found, foundErr = nil, nil
     local ok, err = pcall(function()
-        local placer = System.SpawnEntity({
-            class = "NPC",
-            name = "ItemSwap_Placer_" .. tostring(os.clock()),
-            position = pos,
-        })
-        if not placer then error("SpawnEntity(placer) failed") end
+        local before = {}
+        for _, w in pairs(player.inventory:GetInventoryTable()) do before[tostring(w)] = true end
 
-        local hideOk, hideErr = pcall(function() placer:Hide(true) end)
-        if not hideOk then
-            System.LogAlways("[ITEMSWAP] placer Hide failed (non-fatal): " .. tostring(hideErr))
-        end
-
-        placer.inventory:CreateItem(cls, health, amount)
+        player.inventory:CreateItem(cls, health, amount)
 
         -- CreateItem returns a boolean success flag, not an item handle -
-        -- the real wuid has to be read back from the placer's own (freshly
-        -- empty, so single-entry) inventory table.
+        -- the real wuid has to be read back by diffing the inventory table.
         local wuid = nil
-        for _, w in pairs(placer.inventory:GetInventoryTable()) do wuid = w end
-        if not wuid then error("CreateItem did not produce a readable item wuid") end
+        for _, w in pairs(player.inventory:GetInventoryTable()) do
+            if not before[tostring(w)] then wuid = w end
+        end
+        if not wuid then error("CreateItem did not produce a readable new item wuid") end
 
-        placer.human:PlaceItem(wuid, placer.id, false)
+        player.human:PlaceItem(wuid, player.id, false)
 
         local nearby2 = System.GetEntitiesInSphere(pos, 3)
         if nearby2 then
@@ -110,9 +98,7 @@ function ItemSwap_SpawnItemAt(cls, health, amount, pos)
                 end
             end
         end
-        if not found then foundErr = "placer ran with no error, but no new ground item was found nearby" end
-
-        System.RemoveEntity(placer.id)
+        if not found then foundErr = "PlaceItem ran with no error, but no new ground item was found nearby" end
     end)
 
     if not ok then return nil, tostring(err) end
