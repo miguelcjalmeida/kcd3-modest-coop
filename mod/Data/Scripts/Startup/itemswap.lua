@@ -340,6 +340,23 @@ function ItemSwap_InventoryCounts()
     return counts
 end
 
+-- Reads a WORLD PickableItem entity's real item class, or nil if it can't
+-- be determined. Confirmed live (2026-09-07) this needs entity.item:GetId()
+-- (a real item wuid) followed by ItemManager.GetItem(wuid).class - NOT
+-- ItemManager.GetItem(entity.id) directly (that returns something, but
+-- without a usable .class field), and NOT entity.item.class either (the
+-- .item sub-object is a bound C++ wrapper exposing only "__this" as a raw
+-- field - actual data comes through methods like :GetId(), not properties).
+function ItemSwap_GetGroundItemClass(entity)
+    local cls = nil
+    pcall(function()
+        local wuid = entity.item:GetId()
+        local itemData = ItemManager.GetItem(wuid)
+        if itemData then cls = itemData.class end
+    end)
+    return cls
+end
+
 function ItemSwap_DetectTick()
     if not ItemSwap.detectRunning then return end
     Script.SetTimer(ItemSwap.detectIntervalMs, ItemSwap_DetectTick)  -- reschedule first: a Lua error must not kill the loop
@@ -363,14 +380,19 @@ function ItemSwap_DetectTick()
         end
     end
 
-    -- Pair each class whose count just decreased with one new nearby item -
-    -- this is what makes it "a drop" rather than coincidence.
-    if #newItems > 0 then
-        for cls, prevCount in pairs(ItemSwap.lastInvCounts) do
-            if #newItems == 0 then break end
-            local nowCount = newCounts[cls] or 0
-            if nowCount < prevCount then
-                local dropped = table.remove(newItems, 1)
+    -- For each new nearby item, verify ITS OWN actual class is one that
+    -- really decreased - never just assume the first decreased class found
+    -- belongs to it. Confirmed live this assumption was wrong and caused a
+    -- real bug: a class unrelated to the actual drop (e.g. something
+    -- untracked, or some other item's count moving for an unrelated reason
+    -- in the same ~750ms tick) could get attributed to the new item,
+    -- sending a peer a completely different item than what was dropped.
+    for _, dropped in ipairs(newItems) do
+        local realCls = ItemSwap_GetGroundItemClass(dropped)
+        if realCls then
+            local prevCount = ItemSwap.lastInvCounts[realCls]
+            local nowCount = newCounts[realCls] or 0
+            if prevCount and nowCount < prevCount then
                 local dpos = pos
                 pcall(function() dpos = dropped:GetWorldPos() or pos end)
                 local amount = prevCount - nowCount
@@ -380,12 +402,15 @@ function ItemSwap_DetectTick()
                 -- watcher, and every other player converges on the same id
                 -- because it rides the wire unchanged from here on.
                 local dropId = math.random(1, 2000000000)
-                ItemSwap_TrackDrop(dropId, cls, amount, dropped:GetName())
+                ItemSwap_TrackDrop(dropId, realCls, amount, dropped:GetName())
 
                 System.LogAlways(string.format(
                     "[ITEMSWAP-EVT] drop %d %s %d %.2f %.3f %.3f %.3f",
-                    dropId, cls, amount, 1.0, dpos.x, dpos.y, dpos.z))
+                    dropId, realCls, amount, 1.0, dpos.x, dpos.y, dpos.z))
             end
+            -- realCls with no matching decrease (prevCount nil, e.g. an
+            -- untracked food/consumable class, or not actually smaller) is
+            -- correctly just skipped - no event, no misattribution.
         end
     end
 
