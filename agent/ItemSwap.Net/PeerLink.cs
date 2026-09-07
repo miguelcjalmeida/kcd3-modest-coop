@@ -1,0 +1,337 @@
+using System.Net;
+using System.Net.Sockets;
+
+namespace ItemSwap.Net;
+
+/// <summary>
+/// Star topology, host-relayed: the host accepts up to 2 joiner connections;
+/// joiners never connect to each other. "Broadcast" always means "the host
+/// relays to every other connected player" - see the plan's §1/§4b.
+///
+/// This class only speaks the wire protocol and tracks the player roster and
+/// claim arbitration. It knows nothing about RemoteConsole, kcd.log, or the
+/// game itself - that wiring is the future "skeleton agent"'s job. Testable
+/// entirely with real loopback TCP connections between two or three
+/// in-process instances, no game required.
+/// </summary>
+public sealed class PeerLink : IAsyncDisposable
+{
+    public const int MaxJoiners = 2;
+    public const byte HostPlayerId = 0;
+
+    private readonly bool _isHost;
+    private readonly string _localName;
+    private readonly byte[] _secretHash;
+    private readonly CancellationTokenSource _cts = new();
+
+    // Host-only.
+    private TcpListener? _listener;
+    private readonly Dictionary<byte, ConnectedPeer> _peers = new(); // playerId -> peer, host-side only
+    private byte _nextPlayerId = 1;
+
+    // Joiner-only.
+    private ConnectedPeer? _hostConnection;
+
+    private readonly object _claimLock = new();
+    private readonly Dictionary<uint, byte> _resolvedClaims = new(); // dropId -> winner playerId
+
+    public byte LocalPlayerId { get; private set; }
+    public bool IsHost => _isHost;
+
+    public event Action<byte, string>? PlayerJoined;
+    public event Action<byte>? PlayerLeft;
+    /// <summary>Another player's drop arrived - the local game should spawn it.</summary>
+    public event Action<ItemDropMessage>? ItemDropReceived;
+    /// <summary>A claim was resolved (by the host) - compare WinnerPlayerId to LocalPlayerId.</summary>
+    public event Action<ItemClaimResolvedMessage>? ItemClaimResolved;
+
+    private sealed class ConnectedPeer
+    {
+        public required byte PlayerId;
+        public required string Name;
+        public required TcpClient Client;
+        public required NetworkStream Stream;
+        public readonly SemaphoreSlim WriteLock = new(1, 1);
+    }
+
+    private PeerLink(bool isHost, string localName, string sharedSecret)
+    {
+        _isHost = isHost;
+        _localName = localName;
+        _secretHash = Protocol.HashSecret(sharedSecret);
+    }
+
+    // ===== Host =====
+
+    public static async Task<PeerLink> StartHostAsync(int port, string localName, string sharedSecret, CancellationToken ct = default)
+    {
+        var link = new PeerLink(isHost: true, localName, sharedSecret) { LocalPlayerId = HostPlayerId };
+        link._listener = new TcpListener(IPAddress.Any, port);
+        link._listener.Start();
+        _ = link.AcceptLoopAsync(link._cts.Token);
+        await Task.CompletedTask;
+        return link;
+    }
+
+    private async Task AcceptLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                var client = await _listener!.AcceptTcpClientAsync(ct).ConfigureAwait(false);
+                _ = HandleIncomingJoinerAsync(client, ct);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    private async Task HandleIncomingJoinerAsync(TcpClient client, CancellationToken ct)
+    {
+        var stream = client.GetStream();
+        try
+        {
+            var frame = await Protocol.ReadFrameAsync(stream, ct).ConfigureAwait(false);
+            if (frame is not { Type: MessageType.Hello } helloFrame)
+            {
+                client.Dispose();
+                return;
+            }
+
+            var hello = Protocol.DecodeHello(helloFrame.Payload);
+            var secretOk = hello.SecretHash.AsSpan().SequenceEqual(_secretHash);
+            var roomOk = _peers.Count < MaxJoiners;
+
+            if (!secretOk || !roomOk)
+            {
+                var ack = Protocol.Encode(new HelloAckMessage(Protocol.ProtocolVersion, Ok: false, AssignedPlayerId: 0));
+                await stream.WriteAsync(ack, ct).ConfigureAwait(false);
+                client.Dispose();
+                return;
+            }
+
+            byte assignedId;
+            ConnectedPeer peer;
+            List<ConnectedPeer> existingPeers;
+            lock (_peers)
+            {
+                assignedId = _nextPlayerId++;
+                peer = new ConnectedPeer { PlayerId = assignedId, Name = hello.Name, Client = client, Stream = stream };
+                existingPeers = _peers.Values.ToList();
+                _peers[assignedId] = peer;
+            }
+
+            var okAck = Protocol.Encode(new HelloAckMessage(Protocol.ProtocolVersion, Ok: true, AssignedPlayerId: assignedId));
+            await stream.WriteAsync(okAck, ct).ConfigureAwait(false);
+
+            // Bring the new peer up to date on who's already here (host + any other joiner),
+            // then tell everyone else about the new peer.
+            await SendAsync(peer, Protocol.Encode(new PlayerJoinedMessage(HostPlayerId, _localName))).ConfigureAwait(false);
+            foreach (var existing in existingPeers)
+                await SendAsync(peer, Protocol.Encode(new PlayerJoinedMessage(existing.PlayerId, existing.Name))).ConfigureAwait(false);
+
+            await BroadcastAsync(Protocol.Encode(new PlayerJoinedMessage(assignedId, hello.Name)), excludePlayerId: assignedId).ConfigureAwait(false);
+            PlayerJoined?.Invoke(assignedId, hello.Name);
+
+            await ReadLoopAsync(peer, ct).ConfigureAwait(false);
+        }
+        catch (Exception) when (!ct.IsCancellationRequested)
+        {
+            // A misbehaving/dropped joiner during handshake is not fatal to the host.
+        }
+    }
+
+    private async Task ReadLoopAsync(ConnectedPeer peer, CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                var frame = await Protocol.ReadFrameAsync(peer.Stream, ct).ConfigureAwait(false);
+                if (frame is null) break; // clean disconnect
+
+                switch (frame.Value.Type)
+                {
+                    case MessageType.ItemDrop:
+                        {
+                            var msg = Protocol.DecodeItemDrop(frame.Value.Payload);
+                            ItemDropReceived?.Invoke(msg);
+                            await BroadcastAsync(Protocol.Encode(msg), excludePlayerId: peer.PlayerId).ConfigureAwait(false);
+                            break;
+                        }
+                    case MessageType.ItemClaim:
+                        {
+                            var msg = Protocol.DecodeItemClaim(frame.Value.Payload);
+                            await ResolveAndBroadcastClaimAsync(msg.DropId, msg.FromPlayerId).ConfigureAwait(false);
+                            break;
+                        }
+                    case MessageType.Heartbeat:
+                        break;
+                    case MessageType.Disconnect:
+                        return;
+                }
+            }
+        }
+        catch (Exception) when (!ct.IsCancellationRequested) { }
+        finally
+        {
+            lock (_peers) { _peers.Remove(peer.PlayerId); }
+            peer.Client.Dispose();
+            await BroadcastAsync(Protocol.Encode(new PlayerLeftMessage(peer.PlayerId))).ConfigureAwait(false);
+            PlayerLeft?.Invoke(peer.PlayerId);
+        }
+    }
+
+    private async Task ResolveAndBroadcastClaimAsync(uint dropId, byte claimantPlayerId)
+    {
+        byte winner;
+        lock (_claimLock)
+        {
+            if (!_resolvedClaims.TryGetValue(dropId, out winner))
+            {
+                winner = claimantPlayerId;
+                _resolvedClaims[dropId] = winner;
+            }
+        }
+
+        var msg = new ItemClaimResolvedMessage(dropId, winner);
+        ItemClaimResolved?.Invoke(msg); // the host is a player too - it may have a pending local claim on this dropId
+        await BroadcastAsync(Protocol.Encode(msg)).ConfigureAwait(false);
+    }
+
+    private async Task BroadcastAsync(byte[] frameBytes, byte? excludePlayerId = null)
+    {
+        List<ConnectedPeer> targets;
+        lock (_peers)
+        {
+            targets = excludePlayerId is byte ex
+                ? _peers.Values.Where(p => p.PlayerId != ex).ToList()
+                : _peers.Values.ToList();
+        }
+        foreach (var peer in targets)
+            await SendAsync(peer, frameBytes).ConfigureAwait(false);
+    }
+
+    private static async Task SendAsync(ConnectedPeer peer, byte[] frameBytes)
+    {
+        await peer.WriteLock.WaitAsync().ConfigureAwait(false);
+        try { await peer.Stream.WriteAsync(frameBytes).ConfigureAwait(false); }
+        catch { /* the read loop will notice the dead connection and clean up */ }
+        finally { peer.WriteLock.Release(); }
+    }
+
+    // ===== Joiner =====
+
+    public static async Task<PeerLink> JoinAsync(string hostAddress, int port, string localName, string sharedSecret, CancellationToken ct = default)
+    {
+        var link = new PeerLink(isHost: false, localName, sharedSecret);
+        var client = new TcpClient();
+        await client.ConnectAsync(hostAddress, port, ct).ConfigureAwait(false);
+        var stream = client.GetStream();
+
+        var hello = Protocol.Encode(new HelloMessage(Protocol.ProtocolVersion, localName, link._secretHash));
+        await stream.WriteAsync(hello, ct).ConfigureAwait(false);
+
+        var frame = await Protocol.ReadFrameAsync(stream, ct).ConfigureAwait(false);
+        if (frame is not { Type: MessageType.HelloAck } ackFrame)
+            throw new InvalidOperationException("Host did not respond with HelloAck.");
+
+        var ack = Protocol.DecodeHelloAck(ackFrame.Payload);
+        if (!ack.Ok)
+        {
+            client.Dispose();
+            throw new InvalidOperationException("Host rejected the connection (bad shared secret, or the game is full).");
+        }
+
+        link.LocalPlayerId = ack.AssignedPlayerId;
+        link._hostConnection = new ConnectedPeer { PlayerId = HostPlayerId, Name = "host", Client = client, Stream = stream };
+        _ = link.JoinerReadLoopAsync(link._cts.Token);
+        return link;
+    }
+
+    private async Task JoinerReadLoopAsync(CancellationToken ct)
+    {
+        var host = _hostConnection!;
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                var frame = await Protocol.ReadFrameAsync(host.Stream, ct).ConfigureAwait(false);
+                if (frame is null) break;
+
+                switch (frame.Value.Type)
+                {
+                    case MessageType.PlayerJoined:
+                        {
+                            var msg = Protocol.DecodePlayerJoined(frame.Value.Payload);
+                            PlayerJoined?.Invoke(msg.PlayerId, msg.Name);
+                            break;
+                        }
+                    case MessageType.PlayerLeft:
+                        {
+                            var msg = Protocol.DecodePlayerLeft(frame.Value.Payload);
+                            PlayerLeft?.Invoke(msg.PlayerId);
+                            break;
+                        }
+                    case MessageType.ItemDrop:
+                        ItemDropReceived?.Invoke(Protocol.DecodeItemDrop(frame.Value.Payload));
+                        break;
+                    case MessageType.ItemClaimResolved:
+                        ItemClaimResolved?.Invoke(Protocol.DecodeItemClaimResolved(frame.Value.Payload));
+                        break;
+                    case MessageType.Heartbeat:
+                        break;
+                    case MessageType.Disconnect:
+                        return;
+                }
+            }
+        }
+        catch (Exception) when (!ct.IsCancellationRequested) { }
+    }
+
+    // ===== Shared local-event API (used identically whether host or joiner) =====
+
+    /// <summary>
+    /// Call when THIS player's own game detects a local drop. `dropId` is
+    /// supplied by the caller (the game's own Lua mints it, since it needs
+    /// the id immediately to track its own ground copy for the claim
+    /// watcher) rather than minted here, so every player who ends up with a
+    /// copy of the same conceptual item converges on the identical id.
+    /// </summary>
+    public async Task NotifyLocalDropAsync(uint dropId, Guid itemClass, ushort amount, float health, float x, float y, float z)
+    {
+        var msg = new ItemDropMessage(dropId, LocalPlayerId, itemClass, amount, health, x, y, z);
+
+        if (_isHost)
+            await BroadcastAsync(Protocol.Encode(msg)).ConfigureAwait(false);
+        else
+            await SendAsync(_hostConnection!, Protocol.Encode(msg)).ConfigureAwait(false);
+    }
+
+    /// <summary>Call when THIS player physically picks up a tracked drop (local or a peer's).</summary>
+    public async Task NotifyLocalClaimAsync(uint dropId)
+    {
+        if (_isHost)
+        {
+            await ResolveAndBroadcastClaimAsync(dropId, LocalPlayerId).ConfigureAwait(false);
+        }
+        else
+        {
+            var msg = new ItemClaimMessage(dropId, LocalPlayerId);
+            await SendAsync(_hostConnection!, Protocol.Encode(msg)).ConfigureAwait(false);
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _cts.Cancel();
+        _listener?.Stop();
+        List<ConnectedPeer> peers;
+        lock (_peers) { peers = _peers.Values.ToList(); }
+        foreach (var p in peers) p.Client.Dispose();
+        _hostConnection?.Client.Dispose();
+        _cts.Dispose();
+        await Task.CompletedTask;
+    }
+}

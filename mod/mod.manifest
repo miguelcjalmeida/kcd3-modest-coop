@@ -1,0 +1,10 @@
+<kcd_mod>
+    <info>
+        <name>ItemSwap</name>
+        <modid>itemswap</modid>
+        <description>Minimal drop-and-pickup item exchange for a small group of players. No ghosts, no NPC/quest sync.</description>
+        <author>migue</author>
+        <version>0.1.0-spike</version>
+        <created_on>2026-09-07</created_on>
+    </info>
+</kcd_mod>

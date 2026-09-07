@@ -1,0 +1,141 @@
+using System.Globalization;
+using ItemSwap.Net;
+using ItemSwapAgent;
+
+var config = InteractiveSetup.Run(Config.Load());
+
+// InteractiveSetup guarantees a valid Role when it actually prompted; this
+// only matters on the non-interactive (redirected stdin) path, where it
+// returns the loaded config file untouched.
+if (config.Role is not ("host" or "join"))
+{
+    Console.WriteLine("[config] Role must be 'host' or 'join'.");
+    return 1;
+}
+
+Console.WriteLine($"[agent] Starting as {config.Role}, name='{config.PlayerName}'");
+
+PeerLink peerLink;
+if (config.Role == "host")
+{
+    peerLink = await PeerLink.StartHostAsync(config.ListenPort, config.PlayerName, config.SharedSecret);
+    Console.WriteLine($"[agent] Hosting on port {config.ListenPort}. Share your reachable address with up to 2 friends.");
+    Console.WriteLine("[agent] Never forward port 4600 (RemoteConsole) - only this agent's port needs to cross the network. See README.md.");
+}
+else
+{
+    var idx = config.PeerAddress.LastIndexOf(':');
+    if (idx <= 0 || !int.TryParse(config.PeerAddress[(idx + 1)..], out var hostPort))
+    {
+        Console.WriteLine("[config] PeerAddress must be set to 'host:port' for role=join.");
+        return 1;
+    }
+    var hostAddr = config.PeerAddress[..idx];
+    Console.WriteLine($"[agent] Connecting to {hostAddr}:{hostPort} ...");
+    peerLink = await PeerLink.JoinAsync(hostAddr, hostPort, config.PlayerName, config.SharedSecret);
+    Console.WriteLine($"[agent] Connected. Assigned player id {peerLink.LocalPlayerId}.");
+}
+
+await using var rc = new RemoteConsoleClient(config.RemoteConsoleHost, config.RemoteConsolePort);
+
+peerLink.PlayerJoined += (id, name) => Console.WriteLine($"[agent] player joined: id={id} name={name}");
+peerLink.PlayerLeft += id => Console.WriteLine($"[agent] player left: id={id}");
+
+peerLink.ItemDropReceived += async msg =>
+{
+    Console.WriteLine($"[agent] peer drop received: dropId={msg.DropId} from={msg.FromPlayerId} class={msg.ItemClass} amount={msg.Amount}");
+    try
+    {
+        var health = msg.Health.ToString(CultureInfo.InvariantCulture);
+        await rc.SendLuaAsync($"ItemSwap_OnPeerDrop('{msg.DropId}', '{msg.ItemClass}', {msg.Amount}, {health})");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[agent] failed to inject peer drop into the game: {ex.Message}");
+    }
+};
+
+peerLink.ItemClaimResolved += async msg =>
+{
+    // The Lua side doesn't know its own network player id (that's assigned
+    // during the PeerLink handshake, entirely a C#-side concept) - so this
+    // agent, not Lua, decides win/lose and passes just that outcome down.
+    var won = msg.WinnerPlayerId == peerLink.LocalPlayerId;
+    Console.WriteLine($"[agent] claim resolved: dropId={msg.DropId} winner={msg.WinnerPlayerId} (mine={won})");
+    try
+    {
+        await rc.SendLuaAsync($"ItemSwap_OnClaimResolved('{msg.DropId}', {(won ? 1 : 0)})");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[agent] failed to send claim resolution: {ex.Message}");
+    }
+};
+
+await using var logTail = new LogTailReader(config.KcdLogPath);
+logTail.LineRead += async line =>
+{
+    if (line.Contains("ITEMSWAP-LOADED", StringComparison.Ordinal))
+    {
+        // The mod cannot reliably arm its own detector timer on load -
+        // Script.SetTimer only works via a plain console command, never
+        // from the Startup script's own top-level execution (confirmed
+        // live, docs/PHASE1-FINDINGS.md). This is not optional: skip it and
+        // the detector silently does nothing for the whole session.
+        Console.WriteLine("[agent] game (re)loaded the mod - arming the drop detector");
+        try { await rc.SendCommandAsync("itemswap_detect_on"); }
+        catch (Exception ex) { Console.WriteLine($"[agent] failed to arm detector: {ex.Message}"); }
+        return;
+    }
+
+    const string tag = "[ITEMSWAP-EVT]";
+    var tagIndex = line.IndexOf(tag, StringComparison.Ordinal);
+    if (tagIndex < 0) return;
+
+    var parts = line[(tagIndex + tag.Length)..].Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+    if (parts.Length == 0) return;
+
+    try
+    {
+        switch (parts[0])
+        {
+            // drop <dropId> <cls> <amount> <health> <x> <y> <z>
+            // dropId is minted by Lua (it needs the id immediately to track
+            // its own ground copy for the claim watcher), so it's used as-is
+            // here rather than this agent minting its own.
+            case "drop" when parts.Length >= 8
+                && uint.TryParse(parts[1], out var dropId)
+                && Guid.TryParse(parts[2], out var cls)
+                && int.TryParse(parts[3], out var amount)
+                && float.TryParse(parts[4], CultureInfo.InvariantCulture, out var health)
+                && float.TryParse(parts[5], CultureInfo.InvariantCulture, out var x)
+                && float.TryParse(parts[6], CultureInfo.InvariantCulture, out var y)
+                && float.TryParse(parts[7], CultureInfo.InvariantCulture, out var z):
+                {
+                    await peerLink.NotifyLocalDropAsync(dropId, cls, (ushort)amount, health, x, y, z);
+                    Console.WriteLine($"[agent] local drop detected (class={cls}, amount={amount}) -> sent to peers as dropId={dropId}");
+                    break;
+                }
+
+            // claim <dropId>
+            case "claim" when parts.Length >= 2 && uint.TryParse(parts[1], out var claimDropId):
+                Console.WriteLine($"[agent] local claim on dropId={claimDropId}");
+                await peerLink.NotifyLocalClaimAsync(claimDropId);
+                break;
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[agent] failed to handle log line '{line}': {ex.Message}");
+    }
+};
+logTail.Start();
+
+Console.WriteLine("[agent] Running. Press Ctrl+C to exit.");
+
+var shutdown = new TaskCompletionSource();
+Console.CancelKeyPress += (_, e) => { e.Cancel = true; shutdown.TrySetResult(); };
+await shutdown.Task;
+
+await peerLink.DisposeAsync();
+return 0;

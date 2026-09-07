@@ -1,0 +1,4 @@
+bin/
+obj/
+*.user
+itemswap-agent.json
