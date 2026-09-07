@@ -49,11 +49,20 @@ function ItemSwap_ProbeInventory()
     end
 end
 
--- ===== Spawn: mint + place an item via the LOCAL PLAYER directly =====
--- Verified live (docs/AGENT-FINDINGS.md): no placer entity needed at all.
--- `pos` is accepted for the caller's own nearby-item search radius, but the
--- item actually lands wherever PlaceItem puts it relative to the player
--- (confirmed close enough to the player to always be within a few meters).
+-- ===== Spawn: mint on the LOCAL PLAYER, place via a throwaway anchor =====
+-- Verified live (docs/AGENT-FINDINGS.md): CreateItem must run on the local
+-- player (a bare NPC's inventory gets auto-outfitted with random civilian
+-- clothing by the engine, clobbering whatever class was requested).
+-- PlaceItem's second argument is a reference ENTITY, not a position - it was
+-- originally called with player.id, which places near the player regardless
+-- of `pos` (fine for item drops, which are always meant to land near
+-- whoever's receiving them, but wrong for anything that needs an arbitrary
+-- world position, like a peer's presence marker). Confirmed live: passing a
+-- separate throwaway anchor entity spawned AT `pos` places the item next to
+-- that anchor instead - 15m from the player, correctly. The anchor is
+-- deleted immediately after; it is a position reference, never rendered
+-- meaningfully (same class as the item itself, so it never even gets its
+-- own frame before being cleaned up).
 -- Returns the found ground entity, or nil + an error string.
 function ItemSwap_SpawnItemAt(cls, health, amount, pos)
     if not pos then return nil, "no target position" end
@@ -74,6 +83,13 @@ function ItemSwap_SpawnItemAt(cls, health, amount, pos)
 
     local found, foundErr = nil, nil
     local ok, err = pcall(function()
+        local anchor = System.SpawnEntity({
+            class = "PickableItem",
+            name = "ItemSwap_Anchor_" .. tostring(os.clock()),
+            position = pos,
+        })
+        if not anchor then error("SpawnEntity(anchor) failed") end
+
         local before = {}
         for _, w in pairs(player.inventory:GetInventoryTable()) do before[tostring(w)] = true end
 
@@ -85,20 +101,25 @@ function ItemSwap_SpawnItemAt(cls, health, amount, pos)
         for _, w in pairs(player.inventory:GetInventoryTable()) do
             if not before[tostring(w)] then wuid = w end
         end
-        if not wuid then error("CreateItem did not produce a readable new item wuid") end
+        if not wuid then
+            System.RemoveEntity(anchor.id)
+            error("CreateItem did not produce a readable new item wuid")
+        end
 
-        player.human:PlaceItem(wuid, player.id, false)
+        player.human:PlaceItem(wuid, anchor.id, false)
 
         local nearby2 = System.GetEntitiesInSphere(pos, 3)
         if nearby2 then
             for _, e in pairs(nearby2) do
-                if e and e.class == "PickableItem" and not preIds[e.id] then
+                if e and e.class == "PickableItem" and e.id ~= anchor.id and not preIds[e.id] then
                     found = e
                     break
                 end
             end
         end
         if not found then foundErr = "PlaceItem ran with no error, but no new ground item was found nearby" end
+
+        System.RemoveEntity(anchor.id)
     end)
 
     if not ok then return nil, tostring(err) end
@@ -180,6 +201,62 @@ function ItemSwap_OnPeerDrop(dropId, cls, amount, health)
         System.LogAlways(string.format("[ITEMSWAP-ERR] OnPeerDrop failed dropId=%s: %s",
             tostring(dropId), tostring(err)))
     end
+end
+
+-- ===== Milestone 2 (pragmatic first pass): peer presence markers =====
+-- A visible marker for each connected peer, kept at their actual reported
+-- position. This is deliberately NOT the "translucent fluctuating flame"
+-- look from the original idea - live experimentation (docs/AGENT-FINDINGS.md)
+-- found that Light and Torch entities both spawn but render nothing visible
+-- without specific mesh/effect properties we don't have visibility into, and
+-- ParticleEffect isn't even a spawnable class in this build. A real
+-- PickableItem is guaranteed visible - it's the exact mechanism every synced
+-- item drop already uses - at the cost of being a solid object a player
+-- could technically interact with/pick up by mistake. Accepted as a known
+-- limitation for this pass; a proper VFX marker can replace this later
+-- without changing the position-sync plumbing around it at all.
+ItemSwap.peerMarkers = {}  -- playerId (string key) -> marker entity name
+ItemSwap.markerClass = "8e4c3ce6-3e4a-40ea-bb40-a4cb2c2254a0"  -- a cap - small, distinctive, confirmed deterministic
+
+-- Called by the agent (one-shot '#'-eval is fine, no timer involved) on
+-- every position update relayed from a peer:
+--   #ItemSwap_OnPeerPosition(<playerId>, <x>, <y>, <z>)
+-- Moves the existing marker if one exists for this player, or creates one.
+function ItemSwap_OnPeerPosition(playerId, x, y, z)
+    local key = tostring(playerId)
+    local pos = { x = tonumber(x), y = tonumber(y), z = tonumber(z) }
+    if not pos.x or not pos.y or not pos.z then return end
+
+    local entityName = ItemSwap.peerMarkers[key]
+    if entityName then
+        local ent = System.GetEntityByName(entityName)
+        if ent then
+            pcall(function() ent:SetWorldPos(pos) end)
+            return
+        end
+        -- Marker entity is gone (most likely someone picked it up out of
+        -- curiosity) - fall through and respawn a fresh one below.
+        ItemSwap.peerMarkers[key] = nil
+    end
+
+    local found, err = ItemSwap_SpawnItemAt(ItemSwap.markerClass, 1.0, 1, pos)
+    if found then
+        ItemSwap.peerMarkers[key] = found:GetName()
+    else
+        System.LogAlways("[ITEMSWAP-ERR] OnPeerPosition failed for player " .. key .. ": " .. tostring(err))
+    end
+end
+
+-- Called by the agent when a peer disconnects, so their marker doesn't sit
+-- around forever representing someone no longer playing:
+--   #ItemSwap_OnPeerLeft(<playerId>)
+function ItemSwap_OnPeerLeft(playerId)
+    local key = tostring(playerId)
+    local entityName = ItemSwap.peerMarkers[key]
+    ItemSwap.peerMarkers[key] = nil
+    if not entityName then return end
+    local ent = System.GetEntityByName(entityName)
+    if ent then pcall(function() System.RemoveEntity(ent.id) end) end
 end
 
 -- ===== Phase 1: automatic drop detection =====
@@ -351,6 +428,15 @@ function ItemSwap_DetectTick()
     local pos = nil
     pcall(function() pos = player:GetWorldPos() end)
     if not pos then return end
+
+    -- Milestone 2: piggyback the same tick for a low-rate position
+    -- broadcast (~1.3Hz at the default 750ms interval) - deliberately not a
+    -- separate, faster timer. This is exactly the design goal from the
+    -- start: a coarse, infrequent position stream is enough for a presence
+    -- marker and avoids anything like the reference project's continuous
+    -- 50Hz stream that originally motivated keeping this mod's console/log
+    -- output minimal.
+    System.LogAlways(string.format("[ITEMSWAP-EVT] pos %.3f %.3f %.3f", pos.x, pos.y, pos.z))
 
     local newCounts = ItemSwap_InventoryCounts()
 

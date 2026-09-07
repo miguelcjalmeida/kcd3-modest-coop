@@ -44,6 +44,8 @@ public sealed class PeerLink : IAsyncDisposable
     public event Action<ItemDropMessage>? ItemDropReceived;
     /// <summary>A claim was resolved (by the host) - compare WinnerPlayerId to LocalPlayerId.</summary>
     public event Action<ItemClaimResolvedMessage>? ItemClaimResolved;
+    /// <summary>A peer's position update arrived - the local game should move/create their presence marker.</summary>
+    public event Action<PositionUpdateMessage>? PositionUpdateReceived;
 
     private sealed class ConnectedPeer
     {
@@ -166,6 +168,13 @@ public sealed class PeerLink : IAsyncDisposable
                             await ResolveAndBroadcastClaimAsync(msg.DropId, msg.FromPlayerId).ConfigureAwait(false);
                             break;
                         }
+                    case MessageType.PositionUpdate:
+                        {
+                            var msg = Protocol.DecodePositionUpdate(frame.Value.Payload);
+                            PositionUpdateReceived?.Invoke(msg);
+                            await BroadcastAsync(Protocol.Encode(msg), excludePlayerId: peer.PlayerId).ConfigureAwait(false);
+                            break;
+                        }
                     case MessageType.Heartbeat:
                         break;
                     case MessageType.Disconnect:
@@ -280,6 +289,9 @@ public sealed class PeerLink : IAsyncDisposable
                     case MessageType.ItemClaimResolved:
                         ItemClaimResolved?.Invoke(Protocol.DecodeItemClaimResolved(frame.Value.Payload));
                         break;
+                    case MessageType.PositionUpdate:
+                        PositionUpdateReceived?.Invoke(Protocol.DecodePositionUpdate(frame.Value.Payload));
+                        break;
                     case MessageType.Heartbeat:
                         break;
                     case MessageType.Disconnect:
@@ -302,6 +314,17 @@ public sealed class PeerLink : IAsyncDisposable
     public async Task NotifyLocalDropAsync(uint dropId, Guid itemClass, ushort amount, float health, float x, float y, float z)
     {
         var msg = new ItemDropMessage(dropId, LocalPlayerId, itemClass, amount, health, x, y, z);
+
+        if (_isHost)
+            await BroadcastAsync(Protocol.Encode(msg)).ConfigureAwait(false);
+        else
+            await SendAsync(_hostConnection!, Protocol.Encode(msg)).ConfigureAwait(false);
+    }
+
+    /// <summary>Call periodically with THIS player's own current position, so others can show a presence marker for them.</summary>
+    public async Task NotifyLocalPositionAsync(float x, float y, float z)
+    {
+        var msg = new PositionUpdateMessage(LocalPlayerId, x, y, z);
 
         if (_isHost)
             await BroadcastAsync(Protocol.Encode(msg)).ConfigureAwait(false);

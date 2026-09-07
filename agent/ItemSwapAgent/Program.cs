@@ -39,7 +39,12 @@ else
 await using var rc = new RemoteConsoleClient(config.RemoteConsoleHost, config.RemoteConsolePort);
 
 peerLink.PlayerJoined += (id, name) => Console.WriteLine($"[agent] player joined: id={id} name={name}");
-peerLink.PlayerLeft += id => Console.WriteLine($"[agent] player left: id={id}");
+peerLink.PlayerLeft += async id =>
+{
+    Console.WriteLine($"[agent] player left: id={id}");
+    try { await rc.SendLuaAsync($"ItemSwap_OnPeerLeft({id})"); }
+    catch (Exception ex) { Console.WriteLine($"[agent] failed to clear presence marker for player {id}: {ex.Message}"); }
+};
 
 peerLink.ItemDropReceived += async msg =>
 {
@@ -52,6 +57,26 @@ peerLink.ItemDropReceived += async msg =>
     catch (Exception ex)
     {
         Console.WriteLine($"[agent] failed to inject peer drop into the game: {ex.Message}");
+    }
+};
+
+peerLink.PositionUpdateReceived += async msg =>
+{
+    // Deliberately no per-update console line here (this fires at the
+    // detect tick's own rate, ~1.3Hz per connected peer - matches the
+    // project's long-standing goal of keeping console/log output minimal,
+    // same reasoning as never streaming position continuously in the
+    // reference project's style).
+    try
+    {
+        var x = msg.X.ToString(CultureInfo.InvariantCulture);
+        var y = msg.Y.ToString(CultureInfo.InvariantCulture);
+        var z = msg.Z.ToString(CultureInfo.InvariantCulture);
+        await rc.SendLuaAsync($"ItemSwap_OnPeerPosition({msg.PlayerId}, {x}, {y}, {z})");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[agent] failed to update presence marker for player {msg.PlayerId}: {ex.Message}");
     }
 };
 
@@ -121,6 +146,15 @@ logTail.LineRead += async line =>
             case "claim" when parts.Length >= 2 && uint.TryParse(parts[1], out var claimDropId):
                 Console.WriteLine($"[agent] local claim on dropId={claimDropId}");
                 await peerLink.NotifyLocalClaimAsync(claimDropId);
+                break;
+
+            // pos <x> <y> <z> - piggybacks the same detect tick, ~1.3Hz.
+            // No console line here either, same reasoning as the receive side.
+            case "pos" when parts.Length >= 4
+                && float.TryParse(parts[1], CultureInfo.InvariantCulture, out var px)
+                && float.TryParse(parts[2], CultureInfo.InvariantCulture, out var py)
+                && float.TryParse(parts[3], CultureInfo.InvariantCulture, out var pz):
+                await peerLink.NotifyLocalPositionAsync(px, py, pz);
                 break;
         }
     }

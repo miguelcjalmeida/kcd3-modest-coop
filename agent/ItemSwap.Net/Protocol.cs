@@ -26,6 +26,7 @@ public enum MessageType : byte
     ItemClaimResolved = 0x07,
     Heartbeat = 0x08,
     Disconnect = 0x09,
+    PositionUpdate = 0x0A,
 }
 
 public sealed record HelloMessage(byte ProtocolVersion, string Name, byte[] SecretHash);
@@ -47,6 +48,17 @@ public sealed record ItemDropMessage(
 
 public sealed record ItemClaimMessage(uint DropId, byte FromPlayerId);
 public sealed record ItemClaimResolvedMessage(uint DropId, byte WinnerPlayerId);
+
+/// <summary>
+/// Unlike ItemDropMessage's X/Y/Z, these coordinates ARE meant to be used
+/// directly on the receiving side. KCD2's open world is the same static,
+/// shared map for every save - only NPC/quest/inventory state differs
+/// between players, not the terrain itself - so a given (x, y, z) is the
+/// same physical location in everyone's game. That's what makes a presence
+/// marker meaningful at all: it can legitimately be far from the receiving
+/// player, same as a real friend would be if you could see them on the map.
+/// </summary>
+public sealed record PositionUpdateMessage(byte PlayerId, float X, float Y, float Z);
 
 public static class Protocol
 {
@@ -210,4 +222,25 @@ public static class Protocol
     public static byte[] EncodeHeartbeat() => EncodeFrame(MessageType.Heartbeat, ReadOnlySpan<byte>.Empty);
 
     public static byte[] EncodeDisconnect(byte reason) => EncodeFrame(MessageType.Disconnect, [reason]);
+
+    public static byte[] Encode(PositionUpdateMessage m)
+    {
+        var payload = new byte[13];
+        var span = payload.AsSpan();
+        span[0] = m.PlayerId;
+        BitConverter.TryWriteBytes(span[1..5], m.X);
+        BitConverter.TryWriteBytes(span[5..9], m.Y);
+        BitConverter.TryWriteBytes(span[9..13], m.Z);
+        return EncodeFrame(MessageType.PositionUpdate, payload);
+    }
+
+    public static PositionUpdateMessage DecodePositionUpdate(byte[] payload)
+    {
+        var span = payload.AsSpan();
+        return new PositionUpdateMessage(
+            PlayerId: span[0],
+            X: BitConverter.ToSingle(span[1..5]),
+            Y: BitConverter.ToSingle(span[5..9]),
+            Z: BitConverter.ToSingle(span[9..13]));
+    }
 }
