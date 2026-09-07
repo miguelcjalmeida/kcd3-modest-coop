@@ -46,11 +46,24 @@ public sealed class RemoteConsoleClient : IAsyncDisposable
     public Task SendCommandAsync(string command, CancellationToken ct = default) =>
         SendRawAsync(command, ct);
 
+    // Confirmed live: sending several commands back-to-back with zero gap
+    // (e.g. a burst of peer drops arriving together) silently lost most of
+    // them - no exception on the C# side, no error in kcd.log, they just
+    // never executed. A small delay between sends on this connection fixed
+    // it in testing. _lock already serializes sends to one at a time; this
+    // just paces them instead of firing as fast as the loop can go.
+    private static readonly TimeSpan MinGapBetweenSends = TimeSpan.FromMilliseconds(75);
+    private DateTime _lastSendUtc = DateTime.MinValue;
+
     private async Task SendRawAsync(string payload, CancellationToken ct)
     {
         await _lock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            var sinceLast = DateTime.UtcNow - _lastSendUtc;
+            if (sinceLast < MinGapBetweenSends)
+                await Task.Delay(MinGapBetweenSends - sinceLast, ct).ConfigureAwait(false);
+
             await EnsureConnectedAsync(ct).ConfigureAwait(false);
 
             var body = Encoding.UTF8.GetBytes(payload);
@@ -60,6 +73,7 @@ public sealed class RemoteConsoleClient : IAsyncDisposable
             frame[^1] = 0;
 
             await _stream!.WriteAsync(frame, ct).ConfigureAwait(false);
+            _lastSendUtc = DateTime.UtcNow;
         }
         catch (Exception ex)
         {
