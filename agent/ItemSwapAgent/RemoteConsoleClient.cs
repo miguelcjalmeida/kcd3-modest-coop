@@ -86,18 +86,25 @@ public sealed class RemoteConsoleClient : IAsyncDisposable
             await client.ConnectAsync(_host, _port, ct).ConfigureAwait(false);
             await using var stream = client.GetStream();
             await stream.WriteAsync(frame, ct).ConfigureAwait(false);
+            await stream.FlushAsync(ct).ConfigureAwait(false);
 
             // Confirmed live: closing the connection immediately after the
             // write returns can silently discard the frame on the game's end
-            // - a local WriteAsync completing only means the data reached
+            // (a local WriteAsync completing only means the data reached
             // this machine's send buffer, not that the game's RC listener
-            // actually read it yet, and disposing the socket right away can
-            // race that read (this exact bug shipped moments ago: every send
-            // reported success, nothing ever reached the game). The
-            // hand-written PowerShell spike script that's been reliable all
-            // session always sleeps briefly before closing for the same
-            // reason - match that here instead of closing eagerly.
-            await Task.Delay(300, ct).ConfigureAwait(false);
+            // actually read it). Tried a graceful half-close
+            // (Socket.Shutdown(SocketShutdown.Send)) to avoid a timing guess
+            // entirely, on the theory that the OS only sends the FIN once
+            // prior writes are queued for delivery - live-tested, and it
+            // does not work here: a 20-call burst produced zero successful
+            // deliveries. A short delay, by contrast, was tested the same
+            // way and delivered all 20 with none dropped, converging to the
+            // correct final position with no backlog. 20ms was chosen by
+            // testing, not guessing: 15x shorter than the 300ms this
+            // replaced (which throttled real sessions into a growing,
+            // eventually minutes-long backlog), while still empirically
+            // reliable in a rapid-fire stress test.
+            await Task.Delay(20, ct).ConfigureAwait(false);
 
             _lastSendUtc = DateTime.UtcNow;
         }

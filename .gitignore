@@ -1,6 +1,7 @@
 # .NET build output (agent/ has its own copy of these rules too)
 bin/
 obj/
+publish/
 *.user
 
 # Agent's runtime config (contains a shared secret, and is per-machine/per-session)
