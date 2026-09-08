@@ -242,7 +242,21 @@ System.SetCVar('cl_comment', 1)  -- required once: Comment entities no-op their 
 -- every position update relayed from a peer:
 --   #ItemSwap_OnPeerPosition(<playerId>, <x>, <y>, <z>, "<name>")
 -- Moves the existing marker+label if they exist for this player, or creates them.
+--
+-- Entirely wrapped in pcall: this runs as a raw one-shot RC eval with no
+-- caller-side protection, so an uncaught error here (e.g. an entity API
+-- behaving unexpectedly on someone's specific machine/game state) would
+-- otherwise surface only as a raw Lua error the player has no reason to
+-- notice, silently leaving their marker missing or stuck with no
+-- indication why. Logs [ITEMSWAP-ERR] instead.
 function ItemSwap_OnPeerPosition(playerId, x, y, z, name)
+    local ok, err = pcall(ItemSwap_OnPeerPositionBody, playerId, x, y, z, name)
+    if not ok then
+        System.LogAlways("[ITEMSWAP-ERR] OnPeerPosition threw for player " .. tostring(playerId) .. ": " .. tostring(err))
+    end
+end
+
+function ItemSwap_OnPeerPositionBody(playerId, x, y, z, name)
     local key = tostring(playerId)
     local basePos = { x = tonumber(x), y = tonumber(y), z = tonumber(z) }
     if not basePos.x or not basePos.y or not basePos.z then return end

@@ -29,8 +29,6 @@ public sealed class RemoteConsoleClient : IAsyncDisposable
     private readonly string _host;
     private readonly int _port;
     private readonly SemaphoreSlim _lock = new(1, 1);
-    private TcpClient? _client;
-    private NetworkStream? _stream;
 
     public RemoteConsoleClient(string host, int port)
     {
@@ -64,51 +62,56 @@ public sealed class RemoteConsoleClient : IAsyncDisposable
             if (sinceLast < MinGapBetweenSends)
                 await Task.Delay(MinGapBetweenSends - sinceLast, ct).ConfigureAwait(false);
 
-            await EnsureConnectedAsync(ct).ConfigureAwait(false);
-
             var body = Encoding.UTF8.GetBytes(payload);
             var frame = new byte[1 + body.Length + 1];
             frame[0] = ConsoleCommandType;
             body.CopyTo(frame, 1);
             frame[^1] = 0;
 
-            await _stream!.WriteAsync(frame, ct).ConfigureAwait(false);
+            // A fresh connection per send, not a long-lived one. Confirmed
+            // live: a persistent connection kept reporting
+            // TcpClient.Connected == true and every write kept "succeeding"
+            // (no exception, no error anywhere) long after the game's RC
+            // listener had actually stopped receiving them - Connected only
+            // reflects whether the *last* I/O on the socket failed, it never
+            // actively probes the remote end, so a connection that dies
+            // silently (the game hiccups, a brief network blip, anything
+            // that doesn't produce an immediate local error) is invisible to
+            // it forever. RC's own reply-less, one-frame-per-call design
+            // means there's nothing a persistent connection actually buys
+            // here; reconnecting every call costs a negligible loopback TCP
+            // handshake next to the 75ms throttle already in place, and
+            // removes this entire failure class outright.
+            using var client = new TcpClient();
+            await client.ConnectAsync(_host, _port, ct).ConfigureAwait(false);
+            await using var stream = client.GetStream();
+            await stream.WriteAsync(frame, ct).ConfigureAwait(false);
+
+            // Confirmed live: closing the connection immediately after the
+            // write returns can silently discard the frame on the game's end
+            // - a local WriteAsync completing only means the data reached
+            // this machine's send buffer, not that the game's RC listener
+            // actually read it yet, and disposing the socket right away can
+            // race that read (this exact bug shipped moments ago: every send
+            // reported success, nothing ever reached the game). The
+            // hand-written PowerShell spike script that's been reliable all
+            // session always sleeps briefly before closing for the same
+            // reason - match that here instead of closing eagerly.
+            await Task.Delay(300, ct).ConfigureAwait(false);
+
             _lastSendUtc = DateTime.UtcNow;
         }
         catch (Exception ex)
         {
-            // The game may have restarted (new process = new RC listener); drop the
-            // stale connection so the next call reconnects instead of failing forever.
-            Console.WriteLine($"[rc] send failed ({ex.Message}), will reconnect next call");
-            DropConnection();
+            Console.WriteLine($"[rc] send failed: {ex.Message}");
             throw;
         }
         finally { _lock.Release(); }
     }
 
-    private async Task EnsureConnectedAsync(CancellationToken ct)
+    public ValueTask DisposeAsync()
     {
-        if (_client is { Connected: true }) return;
-
-        DropConnection();
-        _client = new TcpClient();
-        await _client.ConnectAsync(_host, _port, ct).ConfigureAwait(false);
-        _stream = _client.GetStream();
-        Console.WriteLine($"[rc] connected to {_host}:{_port}");
-    }
-
-    private void DropConnection()
-    {
-        _stream?.Dispose();
-        _client?.Dispose();
-        _stream = null;
-        _client = null;
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        DropConnection();
         _lock.Dispose();
-        await Task.CompletedTask;
+        return ValueTask.CompletedTask;
     }
 }
