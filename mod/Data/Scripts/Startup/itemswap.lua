@@ -307,7 +307,7 @@ end
 -- wired up yet. Fine for early testing; revisit if condition needs to
 -- survive a trade.
 ItemSwap.detectRunning = false
-ItemSwap.detectIntervalMs = 750
+ItemSwap.detectIntervalMs = 250
 ItemSwap.dropRadius = 3
 ItemSwap.seenItemIds = {}     -- entity id -> true, PickableItems already accounted for
 ItemSwap.lastInvCounts = {}   -- item class -> count, as of the previous tick
@@ -367,7 +367,7 @@ end
 -- Deliberately checks REALITY (is the ground entity still there? is the
 -- item actually in our inventory?) rather than trusting `t.state` to know
 -- what to do about a loss. Confirmed live this distinction matters: the
--- claim watcher only polls every detectIntervalMs (750ms default), so a
+-- claim watcher only polls every detectIntervalMs (250ms default), so a
 -- resolution can arrive before this client's own pickup has even been
 -- locally detected yet (t.state still "ground" even though the player
 -- physically already has it, or is about to). Trusting `t.state ==
@@ -466,7 +466,7 @@ function ItemSwap_DetectTick()
     if not pos then return end
 
     -- Milestone 2: piggyback the same tick for a low-rate position
-    -- broadcast (~1.3Hz at the default 750ms interval) - deliberately not a
+    -- broadcast (4Hz at the default 250ms interval) - deliberately not a
     -- separate, faster timer. This is exactly the design goal from the
     -- start: a coarse, infrequent position stream is enough for a presence
     -- marker and avoids anything like the reference project's continuous
@@ -493,7 +493,7 @@ function ItemSwap_DetectTick()
     -- belongs to it. Confirmed live this assumption was wrong and caused a
     -- real bug: a class unrelated to the actual drop (e.g. something
     -- untracked, or some other item's count moving for an unrelated reason
-    -- in the same ~750ms tick) could get attributed to the new item,
+    -- in the same tick) could get attributed to the new item,
     -- sending a peer a completely different item than what was dropped.
     for _, dropped in ipairs(newItems) do
         local realCls = ItemSwap_GetGroundItemClass(dropped)
