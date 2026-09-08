@@ -28,7 +28,12 @@ public sealed class Config
     /// </summary>
     public string SharedSecret { get; set; } = "change-me-please";
 
-    /// <summary>Path to this machine's KCD2 kcd.log. Defaults to the standard retail install location.</summary>
+    /// <summary>
+    /// Path to this machine's KCD2 kcd.log. Defaults to the standard retail
+    /// install location, but that's just a starting guess - anyone with a
+    /// custom Steam library folder needs a different path, which is why
+    /// InteractiveSetup asks for this first, before anything else.
+    /// </summary>
     public string KcdLogPath { get; set; } =
         @"C:\Program Files (x86)\Steam\steamapps\common\KingdomComeDeliverance2\kcd.log";
 

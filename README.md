@@ -130,11 +130,18 @@ Enter to keep it, or type something else:
 
 ```
 === ItemSwap setup - press Enter on any question to keep the [default] ===
+Path to your KCD2 kcd.log (adjust if your Steam library isn't in the default location) [C:\Program Files (x86)\Steam\steamapps\common\KingdomComeDeliverance2\kcd.log]:
 Host or join? (host/join) [host]:
 Your name [YourName]:
 Shared secret (must match everyone else's exactly) [change-me-please]:
 Port to listen on (share this + your address with your friends) [7777]:
 ```
+
+The kcd.log path is asked first and on its own, since the default only
+matches the standard Steam install location - anyone with a custom Steam
+library folder (a second drive, a custom path picked at install time) needs
+to correct it, or every other feature will silently do nothing (the agent
+can never see the game's own log output).
 
 (A **joiner** gets asked for the host's address instead of a listen port:
 `Host address to join (ip:port, from whoever is hosting)`.)

@@ -20,6 +20,16 @@ public static class InteractiveSetup
 
         Console.WriteLine("=== ItemSwap setup - press Enter on any question to keep the [default] ===");
 
+        // Asked first and separately from everything else: the default
+        // assumes the standard Steam install location, which is wrong for
+        // anyone with a custom Steam library folder (a second drive, a
+        // custom path chosen at install time, etc) - get this wrong and
+        // every other feature silently does nothing, since the agent can
+        // never see the game's own log output.
+        var kcdLogPath = AskPath(
+            "Path to your KCD2 kcd.log (adjust if your Steam library isn't in the default location)",
+            existing.KcdLogPath);
+
         var role = AskChoice("Host or join?", existing.Role == "join" ? "join" : "host", "host", "join");
         var name = Ask("Your name", string.IsNullOrWhiteSpace(existing.PlayerName) ? Environment.UserName : existing.PlayerName);
 
@@ -28,7 +38,7 @@ public static class InteractiveSetup
             Role = role,
             PlayerName = name,
             SharedSecret = Ask("Shared secret (must match everyone else's exactly)", existing.SharedSecret),
-            KcdLogPath = existing.KcdLogPath,
+            KcdLogPath = kcdLogPath,
             RemoteConsoleHost = existing.RemoteConsoleHost,
             RemoteConsolePort = existing.RemoteConsolePort,
         };
@@ -63,6 +73,23 @@ public static class InteractiveSetup
         Console.Write(string.IsNullOrEmpty(defaultValue) ? $"{prompt}: " : $"{prompt} [{defaultValue}]: ");
         var input = Console.ReadLine();
         return string.IsNullOrWhiteSpace(input) ? defaultValue : input.Trim();
+    }
+
+    /// <summary>
+    /// Like Ask, but warns (without blocking) if the resulting path doesn't
+    /// exist - could be a genuine typo, or just that the game hasn't been
+    /// launched with -devmode yet to create the log file, so it isn't worth
+    /// hard-failing over.
+    /// </summary>
+    private static string AskPath(string prompt, string defaultValue)
+    {
+        var path = Ask(prompt, defaultValue);
+        if (!File.Exists(path))
+        {
+            Console.WriteLine($"  Note: {path} doesn't exist yet. That's fine if you haven't launched " +
+                "the game with -devmode yet - otherwise, double-check the path (e.g. a custom Steam library location).");
+        }
+        return path;
     }
 
     private static int AskInt(string prompt, int defaultValue)
