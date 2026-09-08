@@ -245,19 +245,13 @@ ItemSwap.crouchHeightReduction = 0.5   -- meters the marker sits lower while cro
 ItemSwap.crouchTransitionSec = 0.35    -- seconds to ease to the new height when crouch state changes
 ItemSwap.crouchAnimCooldownSec = 10    -- seconds after standing back up before the bob resumes
 
--- Milestone 4: label enhancements (distance cutoff + an HP sub-label).
+-- Milestone 4: label enhancements (distance cutoff). HP itself is still
+-- tracked here (ItemSwap.peerHealth) but no longer has its own world-space
+-- sub-label under the marker - it moved to the F2 panel instead (Milestone 5).
 ItemSwap.peerHealth = {}       -- key -> {cur, max}, latest reported HP for that peer
-ItemSwap.peerHpText = {}       -- key -> last HP sub-label text spawned, so it's only respawned when the text actually changes
 ItemSwap.peerLabelHidden = {}  -- key -> bool, whether this peer's labels are currently distance-hidden (tracked to skip redundant Hide() calls)
--- 1.32, not the naive "just under 1.4" 0.3m gap it might look like: Comment
--- entities render their text ABOVE their own world position, offset by an
--- amount that scales with fSize - confirmed live that the small HP label
--- (fSize 1.5) renders much closer to its own base than the big name label
--- (fSize 6) does to its own, so a "small" world-space gap between the two
--- reads as a much bigger visual gap than intended. Tuned live to look right.
-ItemSwap.hpLabelHeightOffset = 1.32
+ItemSwap.peerNames = {}        -- key -> display name, kept for the F2 peer panel (not otherwise stored outside the label entity's own Text)
 ItemSwap.labelMaxDistance = 300     -- meters from the local player beyond which a peer's labels (not their marker) are hidden
-ItemSwap.hpLabelSize = ItemSwap.labelSize * 0.25  -- 75% smaller than the name label
 
 System.SetCVar('cl_comment', 1)  -- required once: Comment entities no-op their per-frame draw otherwise
 
@@ -300,63 +294,13 @@ function ItemSwap_OnPeerPosition(playerId, x, y, z, name, isCrouching, curHp, ma
     end
 end
 
-ItemSwap.peerHpGen = {}  -- key -> generation counter, see the naming note below
-
--- Keeps a peer's "HP: cur/max" sub-label in sync with their latest reported
--- health. A Comment entity's Text can't be updated in place once spawned
--- (same constraint the name label already lives with) - so this only
--- respawns the entity when the displayed text actually changed, which in
--- practice is far less often than the position tick that carries it.
-function ItemSwap_RefreshPeerHpLabel(key, rec, basePos, health)
-    local hpText
-    if health then
-        hpText = string.format("HP: %d/%d", math.floor(health.cur + 0.5), math.floor(health.max + 0.5))
-    else
-        hpText = "HP: ?/?"
-    end
-
-    local hpEnt = rec.hpLabelName and System.GetEntityByName(rec.hpLabelName)
-    if ItemSwap.peerHpText[key] == hpText and hpEnt then
-        return
-    end
-    ItemSwap.peerHpText[key] = hpText
-
-    if hpEnt then System.RemoveEntity(hpEnt.id) end
-
-    -- A unique name per respawn, not a fixed "ItemSwap_HP_<key>" reused every
-    -- time: confirmed live that spawning a new entity under the SAME name
-    -- immediately after removing the old one silently kept the OLD entity's
-    -- properties (fSize in particular never updated) instead of creating a
-    -- real new one - entity removal isn't fully synchronous here. A unique
-    -- name per generation sidesteps the collision entirely.
-    ItemSwap.peerHpGen[key] = (ItemSwap.peerHpGen[key] or 0) + 1
-    local hpLabelName = "ItemSwap_HP_" .. key .. "_" .. ItemSwap.peerHpGen[key]
-    -- Guard against an orphan reusing this exact name from a previous script
-    -- load (same reasoning as the marker/name label's own stale-name guard).
-    local stale = System.GetEntityByName(hpLabelName)
-    if stale then System.RemoveEntity(stale.id) end
-
-    local hpLabelPos = { x = basePos.x, y = basePos.y, z = basePos.z + ItemSwap.hpLabelHeightOffset }
-    -- fMaxDist=255 is Comment's own "always visible regardless of distance"
-    -- sentinel (see its OnUpdate: >=255 short-circuits to alpha=1.0, never
-    -- fading by distance at all) - our own labelMaxDistance/Hide() cutoff in
-    -- ItemSwap_AnimTickBody is what actually governs visibility now, so the
-    -- entity's native fade must be disabled or it would additionally (and
-    -- much more aggressively, its slider tops out at 255) cull on its own.
-    local hpLabel = System.SpawnEntity({ class = "Comment", name = hpLabelName, position = hpLabelPos, properties = {
-        Text = hpText, fSize = ItemSwap.hpLabelSize, bFixed = true, fMaxDist = 255,
-    } })
-    if hpLabel then
-        rec.hpLabelName = hpLabelName
-    end
-end
-
 function ItemSwap_OnPeerPositionBody(playerId, x, y, z, name, isCrouching, curHp, maxHp)
     local key = tostring(playerId)
     local basePos = { x = tonumber(x), y = tonumber(y), z = tonumber(z) }
     if not basePos.x or not basePos.y or not basePos.z then return end
     name = (name and name ~= "") and name or ("Player " .. key)
     isCrouching = isCrouching == true
+    ItemSwap.peerNames[key] = name
 
     -- Store the peer's raw position and let ItemSwap_AnimTick (running on
     -- its own independent clock-driven loop) do the actual SetWorldPos,
@@ -412,8 +356,13 @@ function ItemSwap_OnPeerPositionBody(playerId, x, y, z, name, isCrouching, curHp
             pcall(function() marker:SetScale(ItemSwap.markerScale) end)
         end
 
-        -- fMaxDist=255 - see the comment on the same property in
-        -- ItemSwap_RefreshPeerHpLabel.
+        -- fMaxDist=255 is Comment's own "always visible regardless of
+        -- distance" sentinel (see its OnUpdate: >=255 short-circuits to
+        -- alpha=1.0, never fading by distance at all) - our own
+        -- labelMaxDistance/Hide() cutoff in ItemSwap_AnimTickBody is what
+        -- actually governs visibility now, so the entity's native fade
+        -- must be disabled or it would additionally (and much more
+        -- aggressively, its slider tops out at 255) cull on its own.
         local label = System.SpawnEntity({ class = "Comment", name = labelName, position = labelPos, properties = {
             Text = name, fSize = ItemSwap.labelSize, bFixed = true, fMaxDist = 255,
         } })
@@ -426,17 +375,13 @@ function ItemSwap_OnPeerPositionBody(playerId, x, y, z, name, isCrouching, curHp
         end
     end
 
-    -- HP sub-label: kept independent of the marker/label (re)spawn above so
-    -- it refreshes on every position event, not only when those need
-    -- recreating. curHp/maxHp of 0/0 (or unparseable) means "unknown" -
-    -- rendered as "HP: ?/?" rather than guessed at.
+    -- HP is still tracked (the F2 peer panel reads it), just no longer
+    -- rendered as its own world-space sub-label under the marker.
+    -- curHp/maxHp of 0/0 (or unparseable) means "unknown".
     curHp = tonumber(curHp)
     maxHp = tonumber(maxHp)
     if curHp and maxHp and maxHp > 0 then
         ItemSwap.peerHealth[key] = { cur = curHp, max = maxHp }
-    end
-    if rec then
-        ItemSwap_RefreshPeerHpLabel(key, rec, basePos, ItemSwap.peerHealth[key])
     end
 end
 
@@ -452,17 +397,13 @@ function ItemSwap_OnPeerLeft(playerId)
     ItemSwap.peerAnimPauseUntil[key] = nil
     ItemSwap.peerHeightTransition[key] = nil
     ItemSwap.peerHealth[key] = nil
-    ItemSwap.peerHpText[key] = nil
     ItemSwap.peerLabelHidden[key] = nil
+    ItemSwap.peerNames[key] = nil
     if not rec then return end
     local markerEnt = System.GetEntityByName(rec.markerName)
     if markerEnt then pcall(function() System.RemoveEntity(markerEnt.id) end) end
     local labelEnt = System.GetEntityByName(rec.labelName)
     if labelEnt then pcall(function() System.RemoveEntity(labelEnt.id) end) end
-    if rec.hpLabelName then
-        local hpEnt = System.GetEntityByName(rec.hpLabelName)
-        if hpEnt then pcall(function() System.RemoveEntity(hpEnt.id) end) end
-    end
 end
 
 -- ===== Milestone 3: marker idle animation =====
@@ -540,11 +481,10 @@ function ItemSwap_AnimTickBody()
             -- real X/Y/Z every tick, just without the marker's vertical
             -- games, so the name stays readable/steady regardless.
             local labelEnt = System.GetEntityByName(rec.labelName)
-            local hpEnt = rec.hpLabelName and System.GetEntityByName(rec.hpLabelName)
 
-            -- Distance-based visibility: only the name/HP sub-labels are
-            -- culled, never the marker - a marker with no readable label at
-            -- long range is still a useful "someone is over there" signal.
+            -- Distance-based visibility: only the name label is culled,
+            -- never the marker - a marker with no readable label at long
+            -- range is still a useful "someone is over there" signal.
             -- Hide() is only called on an actual state change, not every
             -- tick, since it's a real entity-flag write, not a cheap read.
             local hidden = false
@@ -561,17 +501,11 @@ function ItemSwap_AnimTickBody()
                 -- what's used - not a style choice, a required workaround.
                 local hideArg = hidden and 1 or 0
                 if labelEnt then pcall(function() labelEnt:Hide(hideArg) end) end
-                if hpEnt then pcall(function() hpEnt:Hide(hideArg) end) end
             end
 
             if labelEnt then
                 pcall(function()
                     labelEnt:SetWorldPos({ x = base.x, y = base.y, z = base.z + ItemSwap.labelHeightOffset })
-                end)
-            end
-            if hpEnt then
-                pcall(function()
-                    hpEnt:SetWorldPos({ x = base.x, y = base.y, z = base.z + ItemSwap.hpLabelHeightOffset })
                 end)
             end
         end
@@ -596,6 +530,144 @@ end
 
 System.AddCCommand("itemswap_anim_on", "ItemSwap_AnimOn()", "ItemSwap Milestone 3: start marker bob animation")
 System.AddCCommand("itemswap_anim_off", "ItemSwap_AnimOff()", "ItemSwap Milestone 3: stop marker bob animation")
+
+-- ===== Milestone 5: F2 connected-peers panel =====
+-- A simple on-screen text panel, toggled by F2, listing every connected
+-- peer and their distance from the local player. Two APIs make this
+-- possible, both confirmed live (neither had been used anywhere in this
+-- mod before):
+--   - System.DrawText(x, y, text, size) - 2D screen-space text, immediate
+--     mode (redrawn every frame it should appear, same as System.DrawLabel
+--     under the Comment entities used elsewhere in this file). Confirmed
+--     via the reference project's own documented usage, then confirmed
+--     live in this build.
+--   - System.ExecuteCommand("bind f2 <command>") - binds a raw keypress
+--     straight to a registered console command, no action-map XML needed.
+--     Confirmed live: bound F6 to itemswap_start as a throwaway test and
+--     pressing it fired the command (F2 was chosen for the real feature -
+--     see below - but the bind mechanism itself was proven on F6/F7/F8
+--     first). Both F2 and F6 are doubly confirmed safe to claim - unbound
+--     in this game's own default keybind config, AND the reference
+--     project's own notes record every F-key as individually live-tested
+--     before use, flagging F1/F3/F10 as hardcoded debug traps invisible to
+--     config inspection alone. Neither F2 nor F6 was one of them; F2 was
+--     picked over F6 purely on request, after F6 had already been proven
+--     to work.
+--     One real quirk found live: rebinding an already-bound key silently
+--     does nothing (even after an explicit unbind) - the key sticks to
+--     whichever command it was FIRST bound to in the session. Binding a
+--     previously-untouched key works cleanly every time. Not a problem for
+--     normal play (this Startup code only ever binds F2 once per session),
+--     only bit us during our own live testing when we rebound the same key
+--     more than once.
+--
+-- System.DrawText is genuinely one-frame-only immediate-mode - unlike the
+-- Comment-entity technique used elsewhere in this file, which gets real
+-- per-frame callbacks from the engine's own entity update system, a
+-- Script.SetTimer loop is never truly frame-locked, so a slow enough
+-- interval visibly flickers. Confirmed live: 16ms and 8ms both flickered
+-- noticeably; 4ms (close to the interval between individual frames at a
+-- high frame rate) looked clean. Cheap enough given this only runs while
+-- the panel is actually open.
+ItemSwap.panelOpen = false
+ItemSwap.panelIntervalMs = 4  -- tuned live: 16ms and 8ms both still flickered visibly, 4ms looked clean
+
+function ItemSwap_PanelTick()
+    if not ItemSwap.panelOpen then return end  -- stops the chain entirely while closed; toggling back on restarts it
+    Script.SetTimer(ItemSwap.panelIntervalMs, ItemSwap_PanelTick)  -- reschedule first, same reasoning as every other timer loop here
+    local ok, err = pcall(ItemSwap_PanelTickBody)
+    if not ok then
+        System.LogAlways("[ITEMSWAP-ERR] PanelTick failed (loop kept alive): " .. tostring(err))
+    end
+end
+
+-- A cheap outline effect (black text offset 1px in each direction, then
+-- colored text on top) standing in for a real background box: no rect-
+-- drawing primitive exists in this build for that (confirmed live:
+-- Draw2dImage/DrawScreenQuad/DrawQuad/Draw2dRect are all absent). DrawText
+-- DOES take optional r,g,b,a (0-1 range) beyond the base (x,y,text,size)
+-- signature the reference project used - confirmed live with a red
+-- on-screen test - which is what makes this outline (and HP coloring)
+-- possible at all. Deliberately a plain global, not `local function`: a
+-- `local` here only lives for the one RC eval chunk that defines it - bit
+-- us live when a later patch redefining ItemSwap_PanelTickBody alone
+-- couldn't see it anymore and errored on every tick.
+function ItemSwap_DrawTextOutlined(x, y, text, size, r, g, b)
+    r, g, b = r or 1, g or 1, b or 1
+    System.DrawText(x - 1, y, text, size, 0, 0, 0, 1)
+    System.DrawText(x + 1, y, text, size, 0, 0, 0, 1)
+    System.DrawText(x, y - 1, text, size, 0, 0, 0, 1)
+    System.DrawText(x, y + 1, text, size, 0, 0, 0, 1)
+    System.DrawText(x, y, text, size, r, g, b, 1)
+end
+
+-- 8-way compass bearing of (dx, dz2) - the peer's offset from the local
+-- player in the X/Y world plane - matching this game's own top-down compass
+-- convention (Y+ = North, X+ = East), confirmed live: a peer placed at a
+-- pure +X offset from the local player showed as due East.
+function ItemSwap_CardinalDirection(dx, dz2)
+    local bearingDeg = math.deg(math.atan2(dx, dz2))
+    if bearingDeg < 0 then bearingDeg = bearingDeg + 360 end
+    local dirs = { "N", "NE", "E", "SE", "S", "SW", "W", "NW" }
+    local idx = math.floor((bearingDeg + 22.5) / 45) % 8 + 1
+    return dirs[idx]
+end
+
+function ItemSwap_PanelTickBody()
+    local localPos = nil
+    if player then pcall(function() localPos = player:GetWorldPos() end) end
+    if not localPos then return end
+
+    -- titleGap/hpGap/blockGap are all separately tuned live: the title's
+    -- much bigger font needs more headroom than a peer's own two-line
+    -- block does, and the block-to-block gap needs to read as a clear
+    -- separator between different peers, not just another line within one.
+    local x, y, titleGap, hpGap, blockGap = 10, 20, 42, 22, 30
+    ItemSwap_DrawTextOutlined(x, y, "Connected peers (F2)", 3.6)
+    y = y + titleGap
+
+    local any = false
+    for key, base in pairs(ItemSwap.peerBasePositions) do
+        any = true
+        local name = ItemSwap.peerNames[key] or ("Player " .. key)
+        local dx, dz2, dz = base.x - localPos.x, base.y - localPos.y, base.z - localPos.z
+        local dist = math.sqrt(dx * dx + dz2 * dz2 + dz * dz)
+        local dir = ItemSwap_CardinalDirection(dx, dz2)
+        ItemSwap_DrawTextOutlined(x, y, string.format("%s - %.0fm %s", name, dist, dir), 2.4)
+        y = y + hpGap
+
+        local health = ItemSwap.peerHealth[key]
+        local hpText = health and string.format("HP: %d/%d", math.floor(health.cur + 0.5), math.floor(health.max + 0.5)) or "HP: ?/?"
+        -- Unknown health (no `health` yet) defaults to the green branch -
+        -- "assume fine until told otherwise" reads better than alarming
+        -- red for a peer we simply haven't heard from yet.
+        local frac = (health and health.max > 0) and (health.cur / health.max) or 1
+        local hr, hg, hb
+        if frac > 0.4 then hr, hg, hb = 0.5, 1, 0.5 else hr, hg, hb = 1, 0.5, 0.5 end
+        ItemSwap_DrawTextOutlined(x, y, hpText, 2.0, hr, hg, hb)
+        y = y + blockGap
+    end
+    if not any then
+        ItemSwap_DrawTextOutlined(x, y, "(no peers connected)", 2.4)
+    end
+end
+
+function ItemSwap_PanelToggle()
+    ItemSwap.panelOpen = not ItemSwap.panelOpen
+    if ItemSwap.panelOpen then
+        System.LogAlways("[ITEMSWAP] panel ON")
+        Script.SetTimer(ItemSwap.panelIntervalMs, ItemSwap_PanelTick)
+    else
+        System.LogAlways("[ITEMSWAP] panel OFF")
+    end
+end
+
+System.AddCCommand("itemswap_panel_toggle", "ItemSwap_PanelToggle()", "ItemSwap Milestone 5: toggle the F2 connected-peers panel")
+
+-- Bound once per Startup execution (i.e. once per session/level load, same
+-- as everything else re-armed by itemswap_start) - re-binding is harmless
+-- and cheap, so no guard against doing it more than once.
+pcall(function() System.ExecuteCommand("bind f2 itemswap_panel_toggle") end)
 
 -- ===== Phase 1: automatic drop detection =====
 -- Dual-gate, checked every tick: (a) a PickableItem entity appeared near the
