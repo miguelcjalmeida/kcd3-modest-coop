@@ -337,7 +337,7 @@ end
 -- position, no matter how often, cannot restart or desync the animation.
 ItemSwap.animRunning = false
 ItemSwap.animIntervalMs = 33     -- ~30Hz: smooth for a slow bob without being wasteful
-ItemSwap.animAmplitude = 0.1125  -- meters of vertical travel each way - "just a bit" (25% less than the first pass's 0.15)
+ItemSwap.animAmplitude = 0.084375  -- meters of vertical travel each way - "just a bit" (25% less again, from 0.1125)
 ItemSwap.animPeriodSec = 2.0     -- seconds for one full up-down-up cycle
 ItemSwap.animStartClock = nil    -- os.clock() reference point captured once in ItemSwap_AnimOn
 
@@ -364,10 +364,14 @@ function ItemSwap_AnimTickBody()
                     markerEnt:SetWorldPos({ x = base.x, y = base.y, z = base.z + ItemSwap.markerHeightOffset + bob })
                 end)
             end
+            -- Label deliberately excludes `bob` - it still tracks the
+            -- peer's real position every tick, just without the marker's
+            -- oscillation, so the name stays readable/steady while the
+            -- marker above it bobs.
             local labelEnt = System.GetEntityByName(rec.labelName)
             if labelEnt then
                 pcall(function()
-                    labelEnt:SetWorldPos({ x = base.x, y = base.y, z = base.z + ItemSwap.labelHeightOffset + bob })
+                    labelEnt:SetWorldPos({ x = base.x, y = base.y, z = base.z + ItemSwap.labelHeightOffset })
                 end)
             end
         end
