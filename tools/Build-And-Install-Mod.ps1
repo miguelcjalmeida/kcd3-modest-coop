@@ -11,13 +11,34 @@
 
   The pak's internal root is the CONTENTS of mod\Data (e.g. Scripts/Startup/
   itemswap.lua), not the Data folder itself, so it overlays correctly.
+
+.PARAMETER RetailInstall
+  Path to your KCD2 install. If omitted, you'll be prompted for it
+  interactively (default shown matches the standard Steam install
+  location - override it if yours is a custom Steam library folder). Pass
+  it explicitly to skip the prompt, e.g. for a scripted/CI run.
 #>
 
 param(
-    [string]$RetailInstall = "C:\Program Files (x86)\Steam\steamapps\common\KingdomComeDeliverance2"
+    [string]$RetailInstall
 )
 
 $ErrorActionPreference = "Stop"
+
+# The hardcoded default only matches the standard Steam install location -
+# anyone with a custom Steam library folder (a second drive, a custom path
+# picked at install time) needs a different one. Prompt for it instead of
+# silently assuming it, unless the caller already passed -RetailInstall
+# explicitly or stdin isn't interactive (a scripted/CI run).
+$defaultRetailInstall = "C:\Program Files (x86)\Steam\steamapps\common\KingdomComeDeliverance2"
+if (-not $PSBoundParameters.ContainsKey('RetailInstall')) {
+    if ([Console]::IsInputRedirected) {
+        $RetailInstall = $defaultRetailInstall
+    } else {
+        $answer = Read-Host "Path to your KCD2 install (adjust if your Steam library isn't in the default location) [$defaultRetailInstall]"
+        $RetailInstall = if ([string]::IsNullOrWhiteSpace($answer)) { $defaultRetailInstall } else { $answer }
+    }
+}
 
 $repoRoot   = Split-Path -Parent $PSScriptRoot
 $dataSrc    = Join-Path $repoRoot "mod\Data"

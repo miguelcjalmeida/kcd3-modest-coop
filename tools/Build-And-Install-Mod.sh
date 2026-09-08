@@ -13,13 +13,24 @@
 # Usage:
 #   ./Build-And-Install-Mod.sh [retail-install-path]
 #
-# If omitted, retail-install-path defaults to the most common Steam location
-# for a Proton-run KCD2 install. Override it if your Steam library lives
-# somewhere else (a second drive, a custom library folder, etc).
+# If omitted and this is an interactive terminal, you'll be prompted for it
+# (default shown matches the most common Steam location for a Proton-run
+# KCD2 install - override it if your Steam library lives somewhere else, a
+# second drive or a custom library folder). Pass it explicitly to skip the
+# prompt, e.g. for a scripted/CI run.
 
 set -euo pipefail
 
-RETAIL_INSTALL="${1:-$HOME/.steam/steam/steamapps/common/KingdomComeDeliverance2}"
+DEFAULT_RETAIL_INSTALL="$HOME/.steam/steam/steamapps/common/KingdomComeDeliverance2"
+
+if [ $# -ge 1 ]; then
+    RETAIL_INSTALL="$1"
+elif [ -t 0 ]; then
+    read -r -p "Path to your KCD2 install (adjust if your Steam library isn't in the default location) [$DEFAULT_RETAIL_INSTALL]: " ANSWER
+    RETAIL_INSTALL="${ANSWER:-$DEFAULT_RETAIL_INSTALL}"
+else
+    RETAIL_INSTALL="$DEFAULT_RETAIL_INSTALL"
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
