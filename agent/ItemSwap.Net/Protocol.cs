@@ -35,12 +35,12 @@ public sealed record PlayerJoinedMessage(byte PlayerId, string Name);
 public sealed record PlayerLeftMessage(byte PlayerId);
 
 /// <summary>
-/// X/Y/Z are carried for completeness (and possible future use, e.g. a
-/// Milestone 2 presence overlay) but are NOT meant to be used for item
-/// placement on the receiving side - every player is on an independent
-/// single-player save, so the sender's world coordinates describe a
-/// position the receiver's game has never loaded. See itemswap.lua's
-/// ItemSwap_OnPeerDrop, which ignores them for exactly this reason.
+/// X/Y/Z are the dropping player's real world position at the moment of the
+/// drop, and ARE used for placement on the receiving side: KCD2's open
+/// world is the same static, shared map for every save (proven out by the
+/// Milestone 2 presence markers), so a given (x, y, z) is the same physical
+/// location in everyone's game. See itemswap.lua's ItemSwap_OnPeerDrop,
+/// which spawns the item there instead of near the receiving player.
 /// </summary>
 public sealed record ItemDropMessage(
     uint DropId, byte FromPlayerId, Guid ItemClass, ushort Amount, float Health,

@@ -11,7 +11,7 @@ if (args.Length < 3)
 {
     Console.WriteLine("Usage: SyntheticPeer <hostAddr:port> <name> <sharedSecret>");
     Console.WriteLine("Then type commands:");
-    Console.WriteLine("  drop <itemClassGuid> <amount> <health>   - simulate this fake player dropping an item");
+    Console.WriteLine("  drop <itemClassGuid> <amount> <health> [x] [y] [z]   - simulate this fake player dropping an item (position optional)");
     Console.WriteLine("  claim <dropId>                            - simulate this fake player picking up a tracked drop");
     Console.WriteLine("  pos <x> <y> <z>                           - simulate this fake player's position (for testing presence markers)");
     Console.WriteLine("  quit");
@@ -61,8 +61,14 @@ while (true)
             var cls = Guid.Parse(parts[1]);
             var amount = ushort.Parse(parts[2]);
             var health = float.Parse(parts[3], CultureInfo.InvariantCulture);
+            // Optional world position - defaults to 0,0,0 (which the mod
+            // treats as "no real position supplied" and falls back to
+            // placing near the receiving player instead).
+            var x = parts.Length >= 7 ? float.Parse(parts[4], CultureInfo.InvariantCulture) : 0f;
+            var y = parts.Length >= 7 ? float.Parse(parts[5], CultureInfo.InvariantCulture) : 0f;
+            var z = parts.Length >= 7 ? float.Parse(parts[6], CultureInfo.InvariantCulture) : 0f;
             var dropId = (uint)Random.Shared.NextInt64(1, uint.MaxValue);
-            await link.NotifyLocalDropAsync(dropId, cls, amount, health, 0, 0, 0);
+            await link.NotifyLocalDropAsync(dropId, cls, amount, health, x, y, z);
             Console.WriteLine($"[peer] sent drop, dropId={dropId}");
         }
         else if (parts[0] == "claim" && parts.Length >= 2)

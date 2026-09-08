@@ -61,7 +61,10 @@ peerLink.ItemDropReceived += async msg =>
     try
     {
         var health = msg.Health.ToString(CultureInfo.InvariantCulture);
-        await rc.SendLuaAsync($"ItemSwap_OnPeerDrop('{msg.DropId}', '{msg.ItemClass}', {msg.Amount}, {health})");
+        var x = msg.X.ToString(CultureInfo.InvariantCulture);
+        var y = msg.Y.ToString(CultureInfo.InvariantCulture);
+        var z = msg.Z.ToString(CultureInfo.InvariantCulture);
+        await rc.SendLuaAsync($"ItemSwap_OnPeerDrop('{msg.DropId}', '{msg.ItemClass}', {msg.Amount}, {health}, {x}, {y}, {z})");
     }
     catch (Exception ex)
     {

@@ -166,14 +166,17 @@ end
 -- Called by the C# agent (via RC, plain `#`-eval is fine here - this is a
 -- one-shot call, not something that starts a timer) whenever the peer link
 -- reports another player's ItemDrop message:
---   #ItemSwap_OnPeerDrop("<dropId>", "<cls>", <amount>, <health>)
+--   #ItemSwap_OnPeerDrop("<dropId>", "<cls>", <amount>, <health>, <x>, <y>, <z>)
 --
--- Deliberately ignores the sender's world x/y/z. Every player here is on
--- their own completely independent single-player save - the sender's
--- coordinates describe a position in a world the receiver's game has never
--- loaded and has no relationship to. The only placement that means anything
--- is "near wherever the receiving player actually is right now", same as a
--- local test-spawn.
+-- Places the item at the DROPPER's own real world position, not near the
+-- receiving player. Originally this landed near the receiver instead,
+-- reasoning that "every player is on an independent single-player save, so
+-- the sender's coordinates describe a position the receiver's game has
+-- never loaded" - but Milestone 2's presence markers proved that reasoning
+-- wrong: KCD2's open world is the same static, shared map for every save,
+-- so a given (x, y, z) is the same physical location in everyone's game.
+-- x/y/z default to the receiving player's own position if omitted or all
+-- zero (an older agent build, or a synthetic test with no real coordinates).
 --
 -- dropId originates on the DROPPING player's side (minted in
 -- ItemSwap_DetectTick) and rides the wire unchanged through the relay, so
@@ -181,11 +184,17 @@ end
 -- - the original dropper and every receiver - tracks it under the identical
 -- id. That's what let's the claim watcher below correlate "who actually
 -- picked this up" across independent worlds.
-function ItemSwap_OnPeerDrop(dropId, cls, amount, health)
+function ItemSwap_OnPeerDrop(dropId, cls, amount, health, x, y, z)
     amount = tonumber(amount) or 1
     health = tonumber(health) or 1.0
 
-    local spawnPos = ItemSwap_PosInFrontOfPlayer(2.0)
+    x, y, z = tonumber(x), tonumber(y), tonumber(z)
+    local spawnPos = nil
+    if x and y and z and not (x == 0 and y == 0 and z == 0) then
+        spawnPos = { x = x, y = y, z = z }
+    else
+        spawnPos = ItemSwap_PosInFrontOfPlayer(2.0)
+    end
     if not spawnPos then
         System.LogAlways("[ITEMSWAP] OnPeerDrop: no local player/position, dropping dropId=" .. tostring(dropId))
         return
