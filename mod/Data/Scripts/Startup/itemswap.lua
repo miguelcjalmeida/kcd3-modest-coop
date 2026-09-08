@@ -467,8 +467,25 @@ end
 
 function ItemSwap_DetectTick()
     if not ItemSwap.detectRunning then return end
-    Script.SetTimer(ItemSwap.detectIntervalMs, ItemSwap_DetectTick)  -- reschedule first: a Lua error must not kill the loop
+    Script.SetTimer(ItemSwap.detectIntervalMs, ItemSwap_DetectTick)  -- reschedule first: belt-and-braces alongside the pcall below
 
+    -- The whole body is wrapped in pcall, not just individual risky calls.
+    -- Confirmed live (2026-09-07): an uncaught error here doesn't just skip
+    -- this one tick and let the next scheduled call proceed as the
+    -- "reschedule first" comment above assumed - it silently kills the
+    -- entire Script.SetTimer chain outright, with nothing in kcd.log to
+    -- explain why position/drop events just stop forever until something
+    -- external (a manual `#ItemSwap_DetectTick()` call) kicks it again.
+    -- That's not acceptable for something players depend on without any
+    -- debugging access of their own, so nothing inside this function may
+    -- ever be allowed to throw uncaught.
+    local ok, tickErr = pcall(ItemSwap_DetectTickBody)
+    if not ok then
+        System.LogAlways("[ITEMSWAP-ERR] DetectTick failed (loop kept alive): " .. tostring(tickErr))
+    end
+end
+
+function ItemSwap_DetectTickBody()
     if not player then return end
     local pos = nil
     pcall(function() pos = player:GetWorldPos() end)
