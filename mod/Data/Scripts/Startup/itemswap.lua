@@ -782,12 +782,17 @@ pcall(function() System.ExecuteCommand("bind f2 itemswap_panel_toggle") end)
 -- least one is within a generous ~60-degree cone (dot > 0.5) - otherwise
 -- this is a no-op rather than surprising the player with a teleport to
 -- someone behind them just because no one else is connected.
--- 60s per the user's explicit call, to keep fast travel from trivializing
--- exploration - also doubles as the anti-spam guard for a held key firing
--- this command every frame (confirmed live testing the Q bind), so no
--- separate short cooldown is needed on top of it.
-ItemSwap.teleportCooldownSec = 60.0
+-- Cooldown is formula-based, not flat: 1 second per teleportSpeedMetersPerSec
+-- of distance actually skipped, so fast travel compresses the walk into an
+-- instant jump but still "costs" roughly the time that walk would have
+-- taken - the user's own call, after measuring their real in-game movement
+-- speed live from logged position samples (~4.1 m/s). A short floor still
+-- applies for very close jumps, doubling as the anti-spam guard for a held
+-- key firing this command every frame (confirmed live testing the Q bind).
+ItemSwap.teleportSpeedMetersPerSec = 4.1
+ItemSwap.teleportCooldownFloorSec = 3.0
 ItemSwap.lastTeleportClock = nil  -- nil (not 0) until the first real teleport, so the cooldown display doesn't show a false "on cooldown" state right after load
+ItemSwap.lastTeleportCooldownSec = nil  -- this jump's own cooldown duration, since it now varies per-jump rather than being one fixed constant
 ItemSwap.teleportLookDotThreshold = 0.5  -- ~60 degree cone around where the player is looking
 
 function ItemSwap_TeleportToLookedAtPeer()
@@ -799,7 +804,7 @@ end
 
 function ItemSwap_TeleportToLookedAtPeerBody()
     local now = os.clock()
-    if ItemSwap.lastTeleportClock and now - ItemSwap.lastTeleportClock < ItemSwap.teleportCooldownSec then return end
+    if ItemSwap.lastTeleportClock and now - ItemSwap.lastTeleportClock < (ItemSwap.lastTeleportCooldownSec or 0) then return end
 
     if not player or not player.actor then return end
     local localPos, headDir = nil, nil
@@ -825,9 +830,10 @@ function ItemSwap_TeleportToLookedAtPeerBody()
     end
 
     ItemSwap.lastTeleportClock = now
+    ItemSwap.lastTeleportCooldownSec = math.max(ItemSwap.teleportCooldownFloorSec, bestDist / ItemSwap.teleportSpeedMetersPerSec)
     player:SetWorldPos({ x = bestPos.x, y = bestPos.y, z = bestPos.z })
     local name = ItemSwap.peerNames[bestKey] or ("Player " .. bestKey)
-    System.LogAlways("[ITEMSWAP] teleported to " .. name .. string.format(" (was %.0fm away)", bestDist))
+    System.LogAlways("[ITEMSWAP] teleported to " .. name .. string.format(" (was %.0fm away, cooldown %.0fs)", bestDist, ItemSwap.lastTeleportCooldownSec))
 end
 
 System.AddCCommand("itemswap_teleport_looked_at", "ItemSwap_TeleportToLookedAtPeer()", "ItemSwap Milestone 8: teleport to the connected peer the player is looking at")
@@ -861,7 +867,7 @@ end
 
 function ItemSwap_CooldownDisplayTickBody()
     if not ItemSwap.lastTeleportClock then return end  -- never teleported yet this session
-    local remaining = ItemSwap.teleportCooldownSec - (os.clock() - ItemSwap.lastTeleportClock)
+    local remaining = (ItemSwap.lastTeleportCooldownSec or 0) - (os.clock() - ItemSwap.lastTeleportClock)
     if remaining <= 0 then return end  -- off cooldown - nothing to draw
 
     -- r_Width read fresh each tick rather than cached: cheap CVar lookup,
