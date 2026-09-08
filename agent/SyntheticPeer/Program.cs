@@ -13,7 +13,7 @@ if (args.Length < 3)
     Console.WriteLine("Then type commands:");
     Console.WriteLine("  drop <itemClassGuid> <amount> <health> [x] [y] [z]   - simulate this fake player dropping an item (position optional)");
     Console.WriteLine("  claim <dropId>                            - simulate this fake player picking up a tracked drop");
-    Console.WriteLine("  pos <x> <y> <z> [crouching]               - simulate this fake player's position (crouching: 1/true, optional)");
+    Console.WriteLine("  pos <x> <y> <z> [crouching] [curHp] [maxHp]  - simulate this fake player's position (crouching: 1/true; HP optional, defaults to unknown)");
     Console.WriteLine("  quit");
     return 1;
 }
@@ -85,8 +85,10 @@ while (true)
             var y = float.Parse(parts[2], CultureInfo.InvariantCulture);
             var z = float.Parse(parts[3], CultureInfo.InvariantCulture);
             var crouching = parts.Length >= 5 && (parts[4] == "1" || parts[4].Equals("true", StringComparison.OrdinalIgnoreCase));
-            await link.NotifyLocalPositionAsync(x, y, z, crouching);
-            Console.WriteLine($"[peer] sent position {x},{y},{z} crouching={crouching}");
+            var curHp = parts.Length >= 6 ? float.Parse(parts[5], CultureInfo.InvariantCulture) : 0f;
+            var maxHp = parts.Length >= 7 ? float.Parse(parts[6], CultureInfo.InvariantCulture) : 0f;
+            await link.NotifyLocalPositionAsync(x, y, z, crouching, curHp, maxHp);
+            Console.WriteLine($"[peer] sent position {x},{y},{z} crouching={crouching} hp={curHp}/{maxHp}");
         }
         else
         {

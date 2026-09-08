@@ -90,7 +90,9 @@ peerLink.PositionUpdateReceived += async msg =>
         // trusted, shared-secret-gated peer per the README's threat model).
         var escapedName = name.Replace("\\", "\\\\").Replace("'", "\\'");
         var crouching = msg.IsCrouching ? "true" : "false";
-        await rc.SendLuaAsync($"ItemSwap_OnPeerPosition({msg.PlayerId}, {x}, {y}, {z}, '{escapedName}', {crouching})");
+        var curHp = msg.CurrentHp.ToString(CultureInfo.InvariantCulture);
+        var maxHp = msg.MaxHp.ToString(CultureInfo.InvariantCulture);
+        await rc.SendLuaAsync($"ItemSwap_OnPeerPosition({msg.PlayerId}, {x}, {y}, {z}, '{escapedName}', {crouching}, {curHp}, {maxHp})");
     }
     catch (Exception ex)
     {
@@ -125,11 +127,17 @@ logTail.LineRead += async line =>
         // from the Startup script's own top-level execution (confirmed
         // live, docs/PHASE1-FINDINGS.md). This is not optional: skip it and
         // the detector silently does nothing for the whole session.
-        Console.WriteLine("[agent] game (re)loaded the mod - arming the drop detector and marker animation");
-        try { await rc.SendCommandAsync("itemswap_detect_on"); }
-        catch (Exception ex) { Console.WriteLine($"[agent] failed to arm detector: {ex.Message}"); }
-        try { await rc.SendCommandAsync("itemswap_anim_on"); }
-        catch (Exception ex) { Console.WriteLine($"[agent] failed to arm marker animation: {ex.Message}"); }
+        //
+        // In practice this auto-arm attempt often loses the race with RC
+        // actually being ready this early in the game's startup - confirmed
+        // live, repeatedly. It's still attempted (free when it works), but
+        // isn't the only way to get going: `itemswap_start` in the in-game
+        // console does the same thing on demand and is the reliable
+        // fallback whenever this fires too early.
+        Console.WriteLine("[agent] game (re)loaded the mod - arming the drop detector and marker animation " +
+            "(if this fails, type 'itemswap_start' in the game's console once it's fully loaded)");
+        try { await rc.SendCommandAsync("itemswap_start"); }
+        catch (Exception ex) { Console.WriteLine($"[agent] failed to auto-arm: {ex.Message}"); }
         return;
     }
 
@@ -168,17 +176,20 @@ logTail.LineRead += async line =>
                 await peerLink.NotifyLocalClaimAsync(claimDropId);
                 break;
 
-            // pos <x> <y> <z> <crouching> - piggybacks the same detect tick.
-            // <crouching> is "1"/"0"; missing/unparsed defaults to not
-            // crouching rather than failing the whole match, so an older
-            // mod build without the crouch field still works.
+            // pos <x> <y> <z> <crouching> <curHp> <maxHp> - piggybacks the
+            // same detect tick. <crouching> is "1"/"0"; each trailing field
+            // is optional and defaults to "not crouching"/"HP unknown"
+            // rather than failing the whole match, so an older mod build
+            // missing the newer fields still works.
             // No console line here either, same reasoning as the receive side.
             case "pos" when parts.Length >= 4
                 && float.TryParse(parts[1], CultureInfo.InvariantCulture, out var px)
                 && float.TryParse(parts[2], CultureInfo.InvariantCulture, out var py)
                 && float.TryParse(parts[3], CultureInfo.InvariantCulture, out var pz):
                 var pCrouching = parts.Length >= 5 && parts[4] == "1";
-                await peerLink.NotifyLocalPositionAsync(px, py, pz, pCrouching);
+                var pCurHp = parts.Length >= 6 && float.TryParse(parts[5], CultureInfo.InvariantCulture, out var chp) ? chp : 0f;
+                var pMaxHp = parts.Length >= 7 && float.TryParse(parts[6], CultureInfo.InvariantCulture, out var mhp) ? mhp : 0f;
+                await peerLink.NotifyLocalPositionAsync(px, py, pz, pCrouching, pCurHp, pMaxHp);
                 break;
         }
     }

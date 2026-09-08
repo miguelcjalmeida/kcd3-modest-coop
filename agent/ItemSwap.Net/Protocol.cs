@@ -61,8 +61,16 @@ public sealed record ItemClaimResolvedMessage(uint DropId, byte WinnerPlayerId);
 /// IsCrouching drives Milestone 3's marker crouch behavior (a lowered
 /// height and a paused idle animation) - see itemswap.lua's
 /// ItemSwap_OnPeerPosition.
+///
+/// CurrentHp/MaxHp are Milestone 4's label HP line. No HP-change event
+/// exists on player/player.actor in this build (confirmed live, and the
+/// reference project's own more thorough search never found one either -
+/// it polls too), so this rides the same poll as everything else here. 0/0
+/// means "unknown" (e.g. before the sender's first successful read), not
+/// "dead" - a receiver should render "HP: ?/?" rather than "HP: 0/0" for
+/// that case.
 /// </summary>
-public sealed record PositionUpdateMessage(byte PlayerId, float X, float Y, float Z, bool IsCrouching);
+public sealed record PositionUpdateMessage(byte PlayerId, float X, float Y, float Z, bool IsCrouching, float CurrentHp, float MaxHp);
 
 public static class Protocol
 {
@@ -229,13 +237,15 @@ public static class Protocol
 
     public static byte[] Encode(PositionUpdateMessage m)
     {
-        var payload = new byte[14];
+        var payload = new byte[22];
         var span = payload.AsSpan();
         span[0] = m.PlayerId;
         BitConverter.TryWriteBytes(span[1..5], m.X);
         BitConverter.TryWriteBytes(span[5..9], m.Y);
         BitConverter.TryWriteBytes(span[9..13], m.Z);
         span[13] = (byte)(m.IsCrouching ? 1 : 0);
+        BitConverter.TryWriteBytes(span[14..18], m.CurrentHp);
+        BitConverter.TryWriteBytes(span[18..22], m.MaxHp);
         return EncodeFrame(MessageType.PositionUpdate, payload);
     }
 
@@ -247,6 +257,8 @@ public static class Protocol
             X: BitConverter.ToSingle(span[1..5]),
             Y: BitConverter.ToSingle(span[5..9]),
             Z: BitConverter.ToSingle(span[9..13]),
-            IsCrouching: span[13] != 0);
+            IsCrouching: span[13] != 0,
+            CurrentHp: BitConverter.ToSingle(span[14..18]),
+            MaxHp: BitConverter.ToSingle(span[18..22]));
     }
 }

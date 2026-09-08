@@ -245,6 +245,20 @@ ItemSwap.crouchHeightReduction = 0.5   -- meters the marker sits lower while cro
 ItemSwap.crouchTransitionSec = 0.35    -- seconds to ease to the new height when crouch state changes
 ItemSwap.crouchAnimCooldownSec = 10    -- seconds after standing back up before the bob resumes
 
+-- Milestone 4: label enhancements (distance cutoff + an HP sub-label).
+ItemSwap.peerHealth = {}       -- key -> {cur, max}, latest reported HP for that peer
+ItemSwap.peerHpText = {}       -- key -> last HP sub-label text spawned, so it's only respawned when the text actually changes
+ItemSwap.peerLabelHidden = {}  -- key -> bool, whether this peer's labels are currently distance-hidden (tracked to skip redundant Hide() calls)
+-- 1.32, not the naive "just under 1.4" 0.3m gap it might look like: Comment
+-- entities render their text ABOVE their own world position, offset by an
+-- amount that scales with fSize - confirmed live that the small HP label
+-- (fSize 1.5) renders much closer to its own base than the big name label
+-- (fSize 6) does to its own, so a "small" world-space gap between the two
+-- reads as a much bigger visual gap than intended. Tuned live to look right.
+ItemSwap.hpLabelHeightOffset = 1.32
+ItemSwap.labelMaxDistance = 300     -- meters from the local player beyond which a peer's labels (not their marker) are hidden
+ItemSwap.hpLabelSize = ItemSwap.labelSize * 0.25  -- 75% smaller than the name label
+
 System.SetCVar('cl_comment', 1)  -- required once: Comment entities no-op their per-frame draw otherwise
 
 -- Starts (or redirects, if one is already in flight) a smooth height
@@ -270,7 +284,7 @@ end
 
 -- Called by the agent (one-shot '#'-eval is fine, no timer involved) on
 -- every position update relayed from a peer:
---   #ItemSwap_OnPeerPosition(<playerId>, <x>, <y>, <z>, "<name>", <isCrouching>)
+--   #ItemSwap_OnPeerPosition(<playerId>, <x>, <y>, <z>, "<name>", <isCrouching>, <curHp>, <maxHp>)
 -- Moves the existing marker+label if they exist for this player, or creates them.
 --
 -- Entirely wrapped in pcall: this runs as a raw one-shot RC eval with no
@@ -279,14 +293,65 @@ end
 -- otherwise surface only as a raw Lua error the player has no reason to
 -- notice, silently leaving their marker missing or stuck with no
 -- indication why. Logs [ITEMSWAP-ERR] instead.
-function ItemSwap_OnPeerPosition(playerId, x, y, z, name, isCrouching)
-    local ok, err = pcall(ItemSwap_OnPeerPositionBody, playerId, x, y, z, name, isCrouching)
+function ItemSwap_OnPeerPosition(playerId, x, y, z, name, isCrouching, curHp, maxHp)
+    local ok, err = pcall(ItemSwap_OnPeerPositionBody, playerId, x, y, z, name, isCrouching, curHp, maxHp)
     if not ok then
         System.LogAlways("[ITEMSWAP-ERR] OnPeerPosition threw for player " .. tostring(playerId) .. ": " .. tostring(err))
     end
 end
 
-function ItemSwap_OnPeerPositionBody(playerId, x, y, z, name, isCrouching)
+ItemSwap.peerHpGen = {}  -- key -> generation counter, see the naming note below
+
+-- Keeps a peer's "HP: cur/max" sub-label in sync with their latest reported
+-- health. A Comment entity's Text can't be updated in place once spawned
+-- (same constraint the name label already lives with) - so this only
+-- respawns the entity when the displayed text actually changed, which in
+-- practice is far less often than the position tick that carries it.
+function ItemSwap_RefreshPeerHpLabel(key, rec, basePos, health)
+    local hpText
+    if health then
+        hpText = string.format("HP: %d/%d", math.floor(health.cur + 0.5), math.floor(health.max + 0.5))
+    else
+        hpText = "HP: ?/?"
+    end
+
+    local hpEnt = rec.hpLabelName and System.GetEntityByName(rec.hpLabelName)
+    if ItemSwap.peerHpText[key] == hpText and hpEnt then
+        return
+    end
+    ItemSwap.peerHpText[key] = hpText
+
+    if hpEnt then System.RemoveEntity(hpEnt.id) end
+
+    -- A unique name per respawn, not a fixed "ItemSwap_HP_<key>" reused every
+    -- time: confirmed live that spawning a new entity under the SAME name
+    -- immediately after removing the old one silently kept the OLD entity's
+    -- properties (fSize in particular never updated) instead of creating a
+    -- real new one - entity removal isn't fully synchronous here. A unique
+    -- name per generation sidesteps the collision entirely.
+    ItemSwap.peerHpGen[key] = (ItemSwap.peerHpGen[key] or 0) + 1
+    local hpLabelName = "ItemSwap_HP_" .. key .. "_" .. ItemSwap.peerHpGen[key]
+    -- Guard against an orphan reusing this exact name from a previous script
+    -- load (same reasoning as the marker/name label's own stale-name guard).
+    local stale = System.GetEntityByName(hpLabelName)
+    if stale then System.RemoveEntity(stale.id) end
+
+    local hpLabelPos = { x = basePos.x, y = basePos.y, z = basePos.z + ItemSwap.hpLabelHeightOffset }
+    -- fMaxDist=255 is Comment's own "always visible regardless of distance"
+    -- sentinel (see its OnUpdate: >=255 short-circuits to alpha=1.0, never
+    -- fading by distance at all) - our own labelMaxDistance/Hide() cutoff in
+    -- ItemSwap_AnimTickBody is what actually governs visibility now, so the
+    -- entity's native fade must be disabled or it would additionally (and
+    -- much more aggressively, its slider tops out at 255) cull on its own.
+    local hpLabel = System.SpawnEntity({ class = "Comment", name = hpLabelName, position = hpLabelPos, properties = {
+        Text = hpText, fSize = ItemSwap.hpLabelSize, bFixed = true, fMaxDist = 255,
+    } })
+    if hpLabel then
+        rec.hpLabelName = hpLabelName
+    end
+end
+
+function ItemSwap_OnPeerPositionBody(playerId, x, y, z, name, isCrouching, curHp, maxHp)
     local key = tostring(playerId)
     local basePos = { x = tonumber(x), y = tonumber(y), z = tonumber(z) }
     if not basePos.x or not basePos.y or not basePos.z then return end
@@ -321,36 +386,57 @@ function ItemSwap_OnPeerPositionBody(playerId, x, y, z, name, isCrouching)
     if rec then
         local markerEnt = System.GetEntityByName(rec.markerName)
         local labelEnt = System.GetEntityByName(rec.labelName)
-        if markerEnt and labelEnt then
-            return
+        if not (markerEnt and labelEnt) then
+            -- One or both entities are gone (shouldn't normally happen -
+            -- neither is a real pickable item) - fall through and respawn
+            -- both. The HP sub-label, if any, is left alone: it isn't part
+            -- of this staleness check and gets its own respawn-on-change
+            -- handling below regardless of what happens here.
+            ItemSwap.peerMarkers[key] = nil
+            rec = nil
         end
-        -- One or both entities are gone (shouldn't normally happen - neither
-        -- is a real pickable item) - fall through and respawn both.
-        ItemSwap.peerMarkers[key] = nil
     end
 
-    local markerName = "ItemSwap_Marker_" .. key
-    local labelName = "ItemSwap_Label_" .. key
-    -- Guard against orphans from a previous script load reusing these names.
-    local staleMarker = System.GetEntityByName(markerName)
-    if staleMarker then System.RemoveEntity(staleMarker.id) end
-    local staleLabel = System.GetEntityByName(labelName)
-    if staleLabel then System.RemoveEntity(staleLabel.id) end
+    if not rec then
+        local markerName = "ItemSwap_Marker_" .. key
+        local labelName = "ItemSwap_Label_" .. key
+        -- Guard against orphans from a previous script load reusing these names.
+        local staleMarker = System.GetEntityByName(markerName)
+        if staleMarker then System.RemoveEntity(staleMarker.id) end
+        local staleLabel = System.GetEntityByName(labelName)
+        if staleLabel then System.RemoveEntity(staleLabel.id) end
 
-    local marker = System.SpawnEntity({ class = "BasicEntity", name = markerName, position = markerPos })
-    if marker then
-        pcall(function() marker:SetAngles({ x = math.pi, y = 0, z = 0 }) end)  -- flip: tip points down at the peer
-        pcall(function() marker:SetScale(ItemSwap.markerScale) end)
+        local marker = System.SpawnEntity({ class = "BasicEntity", name = markerName, position = markerPos })
+        if marker then
+            pcall(function() marker:SetAngles({ x = math.pi, y = 0, z = 0 }) end)  -- flip: tip points down at the peer
+            pcall(function() marker:SetScale(ItemSwap.markerScale) end)
+        end
+
+        -- fMaxDist=255 - see the comment on the same property in
+        -- ItemSwap_RefreshPeerHpLabel.
+        local label = System.SpawnEntity({ class = "Comment", name = labelName, position = labelPos, properties = {
+            Text = name, fSize = ItemSwap.labelSize, bFixed = true, fMaxDist = 255,
+        } })
+
+        if marker and label then
+            ItemSwap.peerMarkers[key] = { markerName = markerName, labelName = labelName }
+            rec = ItemSwap.peerMarkers[key]
+        else
+            System.LogAlways("[ITEMSWAP-ERR] OnPeerPosition failed to create marker/label for player " .. key)
+        end
     end
 
-    local label = System.SpawnEntity({ class = "Comment", name = labelName, position = labelPos, properties = {
-        Text = name, fSize = ItemSwap.labelSize, bFixed = true, fMaxDist = 100,
-    } })
-
-    if marker and label then
-        ItemSwap.peerMarkers[key] = { markerName = markerName, labelName = labelName }
-    else
-        System.LogAlways("[ITEMSWAP-ERR] OnPeerPosition failed to create marker/label for player " .. key)
+    -- HP sub-label: kept independent of the marker/label (re)spawn above so
+    -- it refreshes on every position event, not only when those need
+    -- recreating. curHp/maxHp of 0/0 (or unparseable) means "unknown" -
+    -- rendered as "HP: ?/?" rather than guessed at.
+    curHp = tonumber(curHp)
+    maxHp = tonumber(maxHp)
+    if curHp and maxHp and maxHp > 0 then
+        ItemSwap.peerHealth[key] = { cur = curHp, max = maxHp }
+    end
+    if rec then
+        ItemSwap_RefreshPeerHpLabel(key, rec, basePos, ItemSwap.peerHealth[key])
     end
 end
 
@@ -365,11 +451,18 @@ function ItemSwap_OnPeerLeft(playerId)
     ItemSwap.peerCrouching[key] = nil
     ItemSwap.peerAnimPauseUntil[key] = nil
     ItemSwap.peerHeightTransition[key] = nil
+    ItemSwap.peerHealth[key] = nil
+    ItemSwap.peerHpText[key] = nil
+    ItemSwap.peerLabelHidden[key] = nil
     if not rec then return end
     local markerEnt = System.GetEntityByName(rec.markerName)
     if markerEnt then pcall(function() System.RemoveEntity(markerEnt.id) end) end
     local labelEnt = System.GetEntityByName(rec.labelName)
     if labelEnt then pcall(function() System.RemoveEntity(labelEnt.id) end) end
+    if rec.hpLabelName then
+        local hpEnt = System.GetEntityByName(rec.hpLabelName)
+        if hpEnt then pcall(function() System.RemoveEntity(hpEnt.id) end) end
+    end
 end
 
 -- ===== Milestone 3: marker idle animation =====
@@ -400,6 +493,13 @@ function ItemSwap_AnimTickBody()
     local phase = (elapsed / ItemSwap.animPeriodSec) * 2 * math.pi
     local bob = math.sin(phase) * ItemSwap.animAmplitude
     local now = os.clock()
+
+    -- Read once per tick, not once per peer: distance culling below only
+    -- needs it for comparison, and a failed read (nil) just means "don't
+    -- cull this tick" rather than hiding every label.
+    local localPos = nil
+    if player then pcall(function() localPos = player:GetWorldPos() end) end
+    local maxDistSq = ItemSwap.labelMaxDistance * ItemSwap.labelMaxDistance
 
     for key, rec in pairs(ItemSwap.peerMarkers) do
         local base = ItemSwap.peerBasePositions[key]
@@ -440,9 +540,38 @@ function ItemSwap_AnimTickBody()
             -- real X/Y/Z every tick, just without the marker's vertical
             -- games, so the name stays readable/steady regardless.
             local labelEnt = System.GetEntityByName(rec.labelName)
+            local hpEnt = rec.hpLabelName and System.GetEntityByName(rec.hpLabelName)
+
+            -- Distance-based visibility: only the name/HP sub-labels are
+            -- culled, never the marker - a marker with no readable label at
+            -- long range is still a useful "someone is over there" signal.
+            -- Hide() is only called on an actual state change, not every
+            -- tick, since it's a real entity-flag write, not a cheap read.
+            local hidden = false
+            if localPos then
+                local dx, dy, dz = base.x - localPos.x, base.y - localPos.y, base.z - localPos.z
+                hidden = (dx * dx + dy * dy + dz * dz) > maxDistSq
+            end
+            if hidden ~= ItemSwap.peerLabelHidden[key] then
+                ItemSwap.peerLabelHidden[key] = hidden
+                -- Hide(bool) is unreliable here - Hide(false) was confirmed
+                -- live to leave IsHidden() stuck true once hidden, never
+                -- un-hiding the entity again. Hide(<number>) (0/1) was
+                -- confirmed live to work symmetrically both ways, so that's
+                -- what's used - not a style choice, a required workaround.
+                local hideArg = hidden and 1 or 0
+                if labelEnt then pcall(function() labelEnt:Hide(hideArg) end) end
+                if hpEnt then pcall(function() hpEnt:Hide(hideArg) end) end
+            end
+
             if labelEnt then
                 pcall(function()
                     labelEnt:SetWorldPos({ x = base.x, y = base.y, z = base.z + ItemSwap.labelHeightOffset })
+                end)
+            end
+            if hpEnt then
+                pcall(function()
+                    hpEnt:SetWorldPos({ x = base.x, y = base.y, z = base.z + ItemSwap.hpLabelHeightOffset })
                 end)
             end
         end
@@ -648,6 +777,20 @@ function ItemSwap_IsLocalPlayerCrouching()
     return (headPos.z - feetPos.z) < 1.3
 end
 
+-- Polling, not an event: no HP-change callback exists on player/player.actor
+-- in this build (same conclusion the more thoroughly-researched reference
+-- project reached - it polls GetHealth() every tick too, no hook found).
+-- GetMaxHealth() exists alongside it (confirmed live: both currently read
+-- 100/100) - Vitality perks can raise a player's max above the default 100,
+-- so it can't be assumed constant and sent as a fixed number.
+function ItemSwap_GetLocalPlayerHealth()
+    if not player or not player.actor then return 0, 0 end
+    local ok1, cur = pcall(function() return player.actor:GetHealth() end)
+    local ok2, max = pcall(function() return player.actor:GetMaxHealth() end)
+    if not ok1 or not ok2 or type(cur) ~= "number" or type(max) ~= "number" then return 0, 0 end
+    return cur, max
+end
+
 function ItemSwap_DetectTick()
     if not ItemSwap.detectRunning then return end
     Script.SetTimer(ItemSwap.detectIntervalMs, ItemSwap_DetectTick)  -- reschedule first: belt-and-braces alongside the pcall below
@@ -682,7 +825,9 @@ function ItemSwap_DetectTickBody()
     -- 50Hz stream that originally motivated keeping this mod's console/log
     -- output minimal.
     local crouching = ItemSwap_IsLocalPlayerCrouching()
-    System.LogAlways(string.format("[ITEMSWAP-EVT] pos %.3f %.3f %.3f %d", pos.x, pos.y, pos.z, crouching and 1 or 0))
+    local curHp, maxHp = ItemSwap_GetLocalPlayerHealth()
+    System.LogAlways(string.format("[ITEMSWAP-EVT] pos %.3f %.3f %.3f %d %.1f %.1f",
+        pos.x, pos.y, pos.z, crouching and 1 or 0, curHp, maxHp))
 
     local newCounts = ItemSwap_InventoryCounts()
 
@@ -785,6 +930,21 @@ System.AddCCommand("itemswap_detect_on", "ItemSwap_DetectOn()",
     "ItemSwap Phase 1: start the automatic drop detector")
 System.AddCCommand("itemswap_detect_off", "ItemSwap_DetectOff()",
     "ItemSwap Phase 1: stop the automatic drop detector")
+
+-- Single entry point for everything the mod needs armed each session - the
+-- agent's own auto-arm (on seeing ITEMSWAP-LOADED) is unreliable in
+-- practice (RC isn't always up yet at that exact moment), so this exists
+-- as a one-command manual fallback: type it once and both the drop
+-- detector and the marker animation are running. For now it's just the
+-- two calls below; anything else the mod needs started each session
+-- belongs here too.
+function ItemSwap_Start()
+    ItemSwap_DetectOn()
+    ItemSwap_AnimOn()
+end
+
+System.AddCCommand("itemswap_start", "ItemSwap_Start()",
+    "ItemSwap: start everything the mod needs (drop detector + marker animation)")
 
 -- IMPORTANT, confirmed live (2026-09-07) - do NOT call ItemSwap_DetectOn()
 -- here at the bottom of the Startup script. It looks like it should work
