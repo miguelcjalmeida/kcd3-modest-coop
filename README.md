@@ -42,6 +42,13 @@ design and roadmap.
 tools\Build-And-Install-Mod.ps1
 ```
 
+On Linux (KCD2 via Steam Proton), use the equivalent shell script instead
+(requires the `zip` command):
+
+```bash
+tools/Build-And-Install-Mod.sh [path-to-retail-install]
+```
+
 Installs into `<retail KCD2 install>\Mods\itemswap\`. Re-run after editing
 `mod/Data/Scripts/Startup/itemswap.lua` and relaunch the game to pick up
 changes.
@@ -81,11 +88,13 @@ tools\Build-And-Install-Mod.ps1
 This packs `mod/Data` into `itemswap.pak` and copies it, with
 `mod.manifest`, into `<retail KCD2 install>\Mods\itemswap\`. It defaults to
 the standard Steam install path; pass `-RetailInstall "<path>"` if yours is
-different.
+different. On Linux (KCD2 via Steam Proton), use `tools/Build-And-Install-Mod.sh
+[path-to-retail-install]` instead - same behavior, defaults to the usual
+Steam Proton install path if you don't pass one.
 
 **A friend on another machine needs their own copy.** There's no installer
 yet, so the simplest path today: copy this whole repo folder to their PC
-(or just `mod\` and `tools\Build-And-Install-Mod.ps1`), then have them run
+(or just `mod\` and `tools\Build-And-Install-Mod.ps1` / `.sh`), then have them run
 the same script there. It writes into *their* KCD2 `Mods\` folder using
 whatever path their own Steam install actually uses.
 
