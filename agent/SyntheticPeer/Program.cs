@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Reflection;
 using ItemSwap.Net;
 
 // A fake second (or third) player, for testing the real ItemSwapAgent + real
@@ -6,6 +7,8 @@ using ItemSwap.Net;
 // KCD2 - same idea as the reference project's own synthetic-peer testing.
 // This talks the real wire protocol; ItemSwapAgent cannot tell it apart
 // from a real player's agent.
+
+Console.WriteLine($"[peer] SyntheticPeer v{Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "unknown"}");
 
 if (args.Length < 3)
 {

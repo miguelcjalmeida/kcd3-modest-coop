@@ -1,6 +1,9 @@
 using System.Globalization;
+using System.Reflection;
 using ItemSwap.Net;
 using ItemSwapAgent;
+
+Console.WriteLine($"[agent] ItemSwapAgent v{Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "unknown"}");
 
 var config = InteractiveSetup.Run(Config.Load());
 

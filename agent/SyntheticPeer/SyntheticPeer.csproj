@@ -6,6 +6,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>SyntheticPeer</RootNamespace>
+    <!-- Shares agent/version.txt with ItemSwapAgent - same toolkit, same version. -->
+    <Version>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)..\version.txt').Trim())</Version>
   </PropertyGroup>
 
   <ItemGroup>

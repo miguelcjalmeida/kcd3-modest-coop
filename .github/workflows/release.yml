@@ -1,0 +1,63 @@
+name: Release ItemSwapAgent
+
+# Builds ItemSwapAgent for Windows and Linux on every push to main and
+# publishes them as a GitHub Release, so friends always have a ready-to-run
+# download without needing the .NET SDK installed themselves.
+#
+# Versioning: agent/version.txt is the single source of truth (read by both
+# csproj files into <Version>, which is what makes the exe print its own
+# version at startup). The release tag is v<that version> - pushing again
+# without bumping version.txt just updates that same release's files rather
+# than failing or creating a duplicate, so "push and get a build" works
+# either way.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Read version
+        id: version
+        run: echo "version=$(cat agent/version.txt | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+
+      # dotnet publish can cross-compile both RIDs from this one Linux
+      # runner - no need for a Windows runner just to produce a win-x64 exe.
+      - name: Publish win-x64
+        run: >
+          dotnet publish agent/ItemSwapAgent/ItemSwapAgent.csproj
+          -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true
+          -o publish/win-x64
+
+      - name: Publish linux-x64
+        run: >
+          dotnet publish agent/ItemSwapAgent/ItemSwapAgent.csproj
+          -c Release -r linux-x64 --self-contained true
+          -p:PublishSingleFile=true
+          -o publish/linux-x64
+
+      - name: Zip artifacts
+        run: |
+          cd publish/win-x64 && zip -r ../../ItemSwapAgent-win-x64.zip . && cd -
+          cd publish/linux-x64 && zip -r ../../ItemSwapAgent-linux-x64.zip . && cd -
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: ItemSwapAgent v${{ steps.version.outputs.version }}
+          files: |
+            ItemSwapAgent-win-x64.zip
+            ItemSwapAgent-linux-x64.zip

@@ -7,6 +7,10 @@
     <Nullable>enable</Nullable>
     <RootNamespace>ItemSwapAgent</RootNamespace>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Single source of truth for the version shown in the console and used
+         to tag releases - a plain text file rather than yet another XML
+         property, so bumping it is a one-line edit. -->
+    <Version>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)..\version.txt').Trim())</Version>
   </PropertyGroup>
 
   <ItemGroup>
