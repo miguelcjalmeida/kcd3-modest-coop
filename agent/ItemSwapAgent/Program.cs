@@ -38,9 +38,18 @@ else
 
 await using var rc = new RemoteConsoleClient(config.RemoteConsoleHost, config.RemoteConsolePort);
 
-peerLink.PlayerJoined += (id, name) => Console.WriteLine($"[agent] player joined: id={id} name={name}");
+// Tracked purely so presence-marker labels can show a real name instead of
+// a bare player id - PositionUpdateMessage itself only carries id+coords.
+var playerNames = new Dictionary<byte, string>();
+
+peerLink.PlayerJoined += (id, name) =>
+{
+    playerNames[id] = name;
+    Console.WriteLine($"[agent] player joined: id={id} name={name}");
+};
 peerLink.PlayerLeft += async id =>
 {
+    playerNames.Remove(id);
     Console.WriteLine($"[agent] player left: id={id}");
     try { await rc.SendLuaAsync($"ItemSwap_OnPeerLeft({id})"); }
     catch (Exception ex) { Console.WriteLine($"[agent] failed to clear presence marker for player {id}: {ex.Message}"); }
@@ -72,7 +81,14 @@ peerLink.PositionUpdateReceived += async msg =>
         var x = msg.X.ToString(CultureInfo.InvariantCulture);
         var y = msg.Y.ToString(CultureInfo.InvariantCulture);
         var z = msg.Z.ToString(CultureInfo.InvariantCulture);
-        await rc.SendLuaAsync($"ItemSwap_OnPeerPosition({msg.PlayerId}, {x}, {y}, {z})");
+        var name = playerNames.TryGetValue(msg.PlayerId, out var n) ? n : $"Player {msg.PlayerId}";
+        // Basic escaping: a peer's display name is free text they typed into
+        // their own agent config, not a validated identifier like a GUID -
+        // this only guards against an accidental/malicious quote breaking the
+        // Lua call outright, not a full sandboxing (RC already assumes a
+        // trusted, shared-secret-gated peer per the README's threat model).
+        var escapedName = name.Replace("\\", "\\\\").Replace("'", "\\'");
+        await rc.SendLuaAsync($"ItemSwap_OnPeerPosition({msg.PlayerId}, {x}, {y}, {z}, '{escapedName}')");
     }
     catch (Exception ex)
     {

@@ -203,47 +203,81 @@ function ItemSwap_OnPeerDrop(dropId, cls, amount, health)
     end
 end
 
--- ===== Milestone 2 (pragmatic first pass): peer presence markers =====
+-- ===== Milestone 2: peer presence markers =====
 -- A visible marker for each connected peer, kept at their actual reported
--- position. This is deliberately NOT the "translucent fluctuating flame"
--- look from the original idea - live experimentation (docs/AGENT-FINDINGS.md)
--- found that Light and Torch entities both spawn but render nothing visible
--- without specific mesh/effect properties we don't have visibility into, and
--- ParticleEffect isn't even a spawnable class in this build. A real
--- PickableItem is guaranteed visible - it's the exact mechanism every synced
--- item drop already uses - at the cost of being a solid object a player
--- could technically interact with/pick up by mistake. Accepted as a known
--- limitation for this pass; a proper VFX marker can replace this later
--- without changing the position-sync plumbing around it at all.
-ItemSwap.peerMarkers = {}  -- playerId (string key) -> marker entity name
-ItemSwap.markerClass = "8e4c3ce6-3e4a-40ea-bb40-a4cb2c2254a0"  -- a cap - small, distinctive, confirmed deterministic
+-- position, floating roughly at character height. Two entities per peer:
+--
+-- 1. A small inverted-pyramid marker - BasicEntity's own built-in
+--    placeholder mesh (normally only meant to be visible in the Sandbox
+--    editor for an entity with no model assigned). Live experimentation
+--    found this is reliably visible in actual gameplay too, unlike Light,
+--    Torch, and ParticleEffect entities, none of which rendered anything
+--    without properties this build doesn't expose. Flipped 180 deg (tip
+--    pointing down at the peer) and scaled down from its huge default size.
+-- 2. A floating name label using "Comment" - the same entity class the
+--    game's own level editor uses for in-world dev notes, which already
+--    does per-frame System.DrawLabel calls internally. Comment entities are
+--    inert during normal play by default (its OnReset gates its own update
+--    on the cl_comment CVar, meant for editor use) - cl_comment must be
+--    forced on once below or the label silently never draws in a real
+--    playthrough.
+ItemSwap.peerMarkers = {}  -- playerId (string key) -> {markerName, labelName}
+ItemSwap.markerHeightOffset = 1.9  -- meters above the peer's reported (ground) position
+ItemSwap.labelHeightOffset = 1.4   -- meters above the peer's reported position (just below the marker's tip)
+ItemSwap.markerScale = 0.15
+ItemSwap.labelSize = 6.0
+
+System.SetCVar('cl_comment', 1)  -- required once: Comment entities no-op their per-frame draw otherwise
 
 -- Called by the agent (one-shot '#'-eval is fine, no timer involved) on
 -- every position update relayed from a peer:
---   #ItemSwap_OnPeerPosition(<playerId>, <x>, <y>, <z>)
--- Moves the existing marker if one exists for this player, or creates one.
-function ItemSwap_OnPeerPosition(playerId, x, y, z)
+--   #ItemSwap_OnPeerPosition(<playerId>, <x>, <y>, <z>, "<name>")
+-- Moves the existing marker+label if they exist for this player, or creates them.
+function ItemSwap_OnPeerPosition(playerId, x, y, z, name)
     local key = tostring(playerId)
-    local pos = { x = tonumber(x), y = tonumber(y), z = tonumber(z) }
-    if not pos.x or not pos.y or not pos.z then return end
+    local basePos = { x = tonumber(x), y = tonumber(y), z = tonumber(z) }
+    if not basePos.x or not basePos.y or not basePos.z then return end
+    name = (name and name ~= "") and name or ("Player " .. key)
 
-    local entityName = ItemSwap.peerMarkers[key]
-    if entityName then
-        local ent = System.GetEntityByName(entityName)
-        if ent then
-            pcall(function() ent:SetWorldPos(pos) end)
+    local markerPos = { x = basePos.x, y = basePos.y, z = basePos.z + ItemSwap.markerHeightOffset }
+    local labelPos = { x = basePos.x, y = basePos.y, z = basePos.z + ItemSwap.labelHeightOffset }
+
+    local rec = ItemSwap.peerMarkers[key]
+    if rec then
+        local markerEnt = System.GetEntityByName(rec.markerName)
+        local labelEnt = System.GetEntityByName(rec.labelName)
+        if markerEnt and labelEnt then
+            pcall(function() markerEnt:SetWorldPos(markerPos) end)
+            pcall(function() labelEnt:SetWorldPos(labelPos) end)
             return
         end
-        -- Marker entity is gone (most likely someone picked it up out of
-        -- curiosity) - fall through and respawn a fresh one below.
+        -- One or both entities are gone (shouldn't normally happen - neither
+        -- is a real pickable item) - fall through and respawn both.
         ItemSwap.peerMarkers[key] = nil
     end
 
-    local found, err = ItemSwap_SpawnItemAt(ItemSwap.markerClass, 1.0, 1, pos)
-    if found then
-        ItemSwap.peerMarkers[key] = found:GetName()
+    local markerName = "ItemSwap_Marker_" .. key
+    local labelName = "ItemSwap_Label_" .. key
+    -- Guard against orphans from a previous script load reusing these names.
+    local staleMarker = System.GetEntityByName(markerName)
+    if staleMarker then System.RemoveEntity(staleMarker.id) end
+    local staleLabel = System.GetEntityByName(labelName)
+    if staleLabel then System.RemoveEntity(staleLabel.id) end
+
+    local marker = System.SpawnEntity({ class = "BasicEntity", name = markerName, position = markerPos })
+    if marker then
+        pcall(function() marker:SetAngles({ x = math.pi, y = 0, z = 0 }) end)  -- flip: tip points down at the peer
+        pcall(function() marker:SetScale(ItemSwap.markerScale) end)
+    end
+
+    local label = System.SpawnEntity({ class = "Comment", name = labelName, position = labelPos, properties = {
+        Text = name, fSize = ItemSwap.labelSize, bFixed = true, fMaxDist = 100,
+    } })
+
+    if marker and label then
+        ItemSwap.peerMarkers[key] = { markerName = markerName, labelName = labelName }
     else
-        System.LogAlways("[ITEMSWAP-ERR] OnPeerPosition failed for player " .. key .. ": " .. tostring(err))
+        System.LogAlways("[ITEMSWAP-ERR] OnPeerPosition failed to create marker/label for player " .. key)
     end
 end
 
@@ -252,11 +286,13 @@ end
 --   #ItemSwap_OnPeerLeft(<playerId>)
 function ItemSwap_OnPeerLeft(playerId)
     local key = tostring(playerId)
-    local entityName = ItemSwap.peerMarkers[key]
+    local rec = ItemSwap.peerMarkers[key]
     ItemSwap.peerMarkers[key] = nil
-    if not entityName then return end
-    local ent = System.GetEntityByName(entityName)
-    if ent then pcall(function() System.RemoveEntity(ent.id) end) end
+    if not rec then return end
+    local markerEnt = System.GetEntityByName(rec.markerName)
+    if markerEnt then pcall(function() System.RemoveEntity(markerEnt.id) end) end
+    local labelEnt = System.GetEntityByName(rec.labelName)
+    if labelEnt then pcall(function() System.RemoveEntity(labelEnt.id) end) end
 end
 
 -- ===== Phase 1: automatic drop detection =====
