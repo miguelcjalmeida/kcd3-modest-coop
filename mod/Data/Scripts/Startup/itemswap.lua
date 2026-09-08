@@ -760,6 +760,117 @@ System.AddCCommand("itemswap_panel_toggle", "ItemSwap_PanelToggle()", "ItemSwap 
 -- and cheap, so no guard against doing it more than once.
 pcall(function() System.ExecuteCommand("bind f2 itemswap_panel_toggle") end)
 
+-- Milestone 8: teleport to whichever connected peer the player is looking at.
+--
+-- player:SetWorldPos() confirmed live to be safe for the PLAYER entity, not
+-- just decoration entities like markers - but ONLY when given a real
+-- ground-truth Z. A first live test used the player's own current Z offset
+-- by 800m in X/Y and dropped the player under the terrain, stuck looking up
+-- - the destination's actual ground height was never consulted. The fix,
+-- also confirmed live: a peer's broadcast (x, y, z) is always a genuine
+-- GetWorldPos() reading from an actual live character standing there, so
+-- teleporting to a peer's last-known position (not a guessed offset) is
+-- safe by construction. Also confirmed live: an instant multi-hundred-meter
+-- jump itself is fine - streaming/collision caught up correctly once Z
+-- was correct; no PostPhysicalize() or similar workaround was needed.
+--
+-- player.actor:GetHeadDir() confirmed live (twice, once pre-death and once
+-- post-respawn) to return a real normalized look-direction vector that
+-- genuinely changes as the player turns - not a stuck/cached value. Peer
+-- selection is by dot product between that direction and the vector to
+-- each peer: the peer most in front of the player wins, so long as at
+-- least one is within a generous ~60-degree cone (dot > 0.5) - otherwise
+-- this is a no-op rather than surprising the player with a teleport to
+-- someone behind them just because no one else is connected.
+-- 60s per the user's explicit call, to keep fast travel from trivializing
+-- exploration - also doubles as the anti-spam guard for a held key firing
+-- this command every frame (confirmed live testing the Q bind), so no
+-- separate short cooldown is needed on top of it.
+ItemSwap.teleportCooldownSec = 60.0
+ItemSwap.lastTeleportClock = nil  -- nil (not 0) until the first real teleport, so the cooldown display doesn't show a false "on cooldown" state right after load
+ItemSwap.teleportLookDotThreshold = 0.5  -- ~60 degree cone around where the player is looking
+
+function ItemSwap_TeleportToLookedAtPeer()
+    local ok, err = pcall(ItemSwap_TeleportToLookedAtPeerBody)
+    if not ok then
+        System.LogAlways("[ITEMSWAP-ERR] TeleportToLookedAtPeer threw: " .. tostring(err))
+    end
+end
+
+function ItemSwap_TeleportToLookedAtPeerBody()
+    local now = os.clock()
+    if ItemSwap.lastTeleportClock and now - ItemSwap.lastTeleportClock < ItemSwap.teleportCooldownSec then return end
+
+    if not player or not player.actor then return end
+    local localPos, headDir = nil, nil
+    pcall(function() localPos = player:GetWorldPos() end)
+    pcall(function() headDir = player.actor:GetHeadDir() end)
+    if not localPos or not headDir then return end
+
+    local bestKey, bestPos, bestDot, bestDist = nil, nil, nil, nil
+    for key, base in pairs(ItemSwap.peerBasePositions) do
+        local dx, dy, dz = base.x - localPos.x, base.y - localPos.y, base.z - localPos.z
+        local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+        if dist > 0 then
+            local dot = (dx / dist) * headDir.x + (dy / dist) * headDir.y + (dz / dist) * headDir.z
+            if dot >= ItemSwap.teleportLookDotThreshold and (not bestDot or dot > bestDot) then
+                bestKey, bestPos, bestDot, bestDist = key, base, dot, dist
+            end
+        end
+    end
+
+    if not bestPos then
+        System.LogAlways("[ITEMSWAP] teleport: not looking at any connected peer")
+        return
+    end
+
+    ItemSwap.lastTeleportClock = now
+    player:SetWorldPos({ x = bestPos.x, y = bestPos.y, z = bestPos.z })
+    local name = ItemSwap.peerNames[bestKey] or ("Player " .. bestKey)
+    System.LogAlways("[ITEMSWAP] teleported to " .. name .. string.format(" (was %.0fm away)", bestDist))
+end
+
+System.AddCCommand("itemswap_teleport_looked_at", "ItemSwap_TeleportToLookedAtPeer()", "ItemSwap Milestone 8: teleport to the connected peer the player is looking at")
+pcall(function() System.ExecuteCommand("bind q itemswap_teleport_looked_at") end)
+
+-- Always-on top-right countdown while the teleport is on cooldown -
+-- deliberately independent of the F2 panel (should stay visible whether or
+-- not that's open), so it's its own tiny tick loop, armed the same way as
+-- everything else itemswap_start starts.
+ItemSwap.cooldownDisplayIntervalMs = 4  -- same as the F2 panel: 16ms/8ms both flickered visibly in that earlier tuning, 4ms didn't
+ItemSwap.cooldownDisplayRunning = false
+
+function ItemSwap_CooldownDisplayOn()
+    if ItemSwap.cooldownDisplayRunning then return end
+    ItemSwap.cooldownDisplayRunning = true
+    Script.SetTimer(ItemSwap.cooldownDisplayIntervalMs, ItemSwap_CooldownDisplayTick)
+end
+
+function ItemSwap_CooldownDisplayOff()
+    ItemSwap.cooldownDisplayRunning = false
+end
+
+function ItemSwap_CooldownDisplayTick()
+    if not ItemSwap.cooldownDisplayRunning then return end
+    Script.SetTimer(ItemSwap.cooldownDisplayIntervalMs, ItemSwap_CooldownDisplayTick)  -- reschedule first, same reasoning as every other timer loop here
+    local ok, err = pcall(ItemSwap_CooldownDisplayTickBody)
+    if not ok then
+        System.LogAlways("[ITEMSWAP-ERR] CooldownDisplayTick failed (loop kept alive): " .. tostring(err))
+    end
+end
+
+function ItemSwap_CooldownDisplayTickBody()
+    if not ItemSwap.lastTeleportClock then return end  -- never teleported yet this session
+    local remaining = ItemSwap.teleportCooldownSec - (os.clock() - ItemSwap.lastTeleportClock)
+    if remaining <= 0 then return end  -- off cooldown - nothing to draw
+
+    -- r_Width read fresh each tick rather than cached: cheap CVar lookup,
+    -- and correct even if a player changes resolution mid-session.
+    local screenW = tonumber(System.GetCVar('r_Width')) or 1920
+    local text = string.format("Fast travel: %ds", math.ceil(remaining))
+    ItemSwap_DrawTextOutlined(screenW - 260, 20, text, 2.0, 1, 0.8, 0.3)
+end
+
 -- ===== Phase 1: automatic drop detection =====
 -- Dual-gate, checked every tick: (a) a PickableItem entity appeared near the
 -- player that we haven't accounted for yet, AND (b) some item class in the
@@ -1163,6 +1274,7 @@ System.AddCCommand("itemswap_detect_off", "ItemSwap_DetectOff()",
 function ItemSwap_Start()
     ItemSwap_DetectOn()
     ItemSwap_AnimOn()
+    ItemSwap_CooldownDisplayOn()
 end
 
 System.AddCCommand("itemswap_start", "ItemSwap_Start()",
