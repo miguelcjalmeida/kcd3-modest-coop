@@ -1,8 +1,9 @@
 name: Release ItemSwapAgent
 
-# Builds ItemSwapAgent for Windows and Linux on every push to main and
-# publishes them as a GitHub Release, so friends always have a ready-to-run
-# download without needing the .NET SDK installed themselves.
+# Builds ItemSwapAgent for Windows and Linux, and packages the mod itself,
+# on every push to main - publishing all three as a GitHub Release so
+# friends always have ready-to-use downloads without needing the .NET SDK
+# or PowerShell installed themselves.
 #
 # Versioning: agent/version.txt is the single source of truth (read by both
 # csproj files into <Version>, which is what makes the exe print its own
@@ -48,10 +49,23 @@ jobs:
           -p:PublishSingleFile=true
           -o publish/linux-x64
 
-      - name: Zip artifacts
+      - name: Zip agent artifacts
         run: |
           cd publish/win-x64 && zip -r ../../ItemSwapAgent-win-x64.zip . && cd -
           cd publish/linux-x64 && zip -r ../../ItemSwapAgent-linux-x64.zip . && cd -
+
+      # Mirrors tools/Build-And-Install-Mod.ps1's layout exactly, so
+      # extracting this zip at the root of a KCD2 install drops the mod
+      # straight into place with no PowerShell/dotnet needed on their end.
+      # itemswap.pak specifically must be stored (zip -0), not deflated -
+      # that's what CryEngine's pak reader expects; the outer mod.zip itself
+      # can compress normally since it's just a plain zip a person extracts.
+      - name: Package mod
+        run: |
+          mkdir -p mod-package/Mods/itemswap/Data
+          (cd mod/Data && zip -r -X -0 ../../mod-package/Mods/itemswap/Data/itemswap.pak .)
+          cp mod/mod.manifest mod-package/Mods/itemswap/mod.manifest
+          (cd mod-package && zip -r ../mod.zip Mods)
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
@@ -61,3 +75,4 @@ jobs:
           files: |
             ItemSwapAgent-win-x64.zip
             ItemSwapAgent-linux-x64.zip
+            mod.zip
