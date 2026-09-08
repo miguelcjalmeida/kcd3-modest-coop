@@ -1,7 +1,7 @@
 # KCD2 Item Swap
 
 A minimal Kingdom Come: Deliverance II co-op mod for a small group of
-trusted friends (up to 3 players). It does exactly one thing: drop an item
+trusted friends (up to 10 players). It does exactly one thing: drop an item
 in your world, it shows up for the others, first pickup wins. No ghosts, no
 NPC/quest/combat sync, no visible presence of other players (that's a
 separate, later milestone — see the plan).
@@ -103,8 +103,8 @@ while running, and the script will fail with a file-in-use error otherwise.
 
 ## Playing with a friend
 
-One person **hosts**; the other **joins** (up to 3 people total — a host
-plus up to 2 joiners). Both sides need: the game launched with `-devmode`
+One person **hosts**; the others **join** (up to 10 people total — a host
+plus up to 9 joiners). Both sides need: the game launched with `-devmode`
 (above), the mod installed (above), and their own copy of the
 `ItemSwapAgent` built and running.
 

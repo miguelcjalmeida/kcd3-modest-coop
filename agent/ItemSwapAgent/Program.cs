@@ -19,7 +19,7 @@ PeerLink peerLink;
 if (config.Role == "host")
 {
     peerLink = await PeerLink.StartHostAsync(config.ListenPort, config.PlayerName, config.SharedSecret);
-    Console.WriteLine($"[agent] Hosting on port {config.ListenPort}. Share your reachable address with up to 2 friends.");
+    Console.WriteLine($"[agent] Hosting on port {config.ListenPort}. Share your reachable address with up to {ItemSwap.Net.PeerLink.MaxJoiners} friends.");
     Console.WriteLine("[agent] Never forward port 4600 (RemoteConsole) - only this agent's port needs to cross the network. See README.md.");
 }
 else
@@ -74,11 +74,9 @@ peerLink.ItemDropReceived += async msg =>
 
 peerLink.PositionUpdateReceived += async msg =>
 {
-    // Deliberately no per-update console line here (this fires at the
-    // detect tick's own rate, ~1.3Hz per connected peer - matches the
-    // project's long-standing goal of keeping console/log output minimal,
-    // same reasoning as never streaming position continuously in the
-    // reference project's style).
+    Console.WriteLine(string.Format(CultureInfo.InvariantCulture,
+        "[agent] position update received: playerId={0} pos={1:F2},{2:F2},{3:F2}",
+        msg.PlayerId, msg.X, msg.Y, msg.Z));
     try
     {
         var x = msg.X.ToString(CultureInfo.InvariantCulture);

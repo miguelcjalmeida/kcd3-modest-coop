@@ -7,7 +7,7 @@ namespace ItemSwap.Net;
 /// Wire protocol for the ItemSwap connection client. Deliberately small and
 /// written from scratch: the reference multiplayer mod this project takes
 /// techniques (not code) from is GPLv3, and this project's feature surface
-/// (connect + drop-item + claim-item, up to 3 players) is tiny enough that
+/// (connect + drop-item + claim-item, up to 10 players) is tiny enough that
 /// reimplementing a similarly-shaped TLV framing is cheap and keeps this
 /// project's own license independent.
 ///

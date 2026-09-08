@@ -4,19 +4,31 @@ using System.Net.Sockets;
 namespace ItemSwap.Net;
 
 /// <summary>
-/// Star topology, host-relayed: the host accepts up to 2 joiner connections;
-/// joiners never connect to each other. "Broadcast" always means "the host
-/// relays to every other connected player" - see the plan's §1/§4b.
+/// Star topology, host-relayed: the host accepts up to MaxJoiners joiner
+/// connections; joiners never connect to each other. "Broadcast" always
+/// means "the host relays to every other connected player" - see the
+/// plan's §1/§4b.
 ///
 /// This class only speaks the wire protocol and tracks the player roster and
 /// claim arbitration. It knows nothing about RemoteConsole, kcd.log, or the
 /// game itself - that wiring is the future "skeleton agent"'s job. Testable
 /// entirely with real loopback TCP connections between two or three
 /// in-process instances, no game required.
+///
+/// MaxJoiners=9 (10 players total) is a soft cap, not a proven one: every
+/// peer's position update becomes one serialized RemoteConsole call into the
+/// host's game, throttled to a ~75ms floor between calls by
+/// RemoteConsoleClient. At the mod's default 250ms broadcast interval, 9
+/// peers alone need ~36 calls/sec just for position - well past the ~13/sec
+/// a single RC connection can sustain, so markers may visibly lag behind
+/// real positions well before the player count actually hits 10. Lowering
+/// the position rate as player count grows, or batching multiple peers'
+/// updates into one Lua call per tick, would be the next fix if that shows
+/// up in practice.
 /// </summary>
 public sealed class PeerLink : IAsyncDisposable
 {
-    public const int MaxJoiners = 2;
+    public const int MaxJoiners = 9;
     public const byte HostPlayerId = 0;
 
     private readonly bool _isHost;

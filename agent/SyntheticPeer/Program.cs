@@ -34,6 +34,8 @@ link.ItemDropReceived += m => Console.WriteLine(
     $"[peer] received ItemDrop: dropId={m.DropId} from={m.FromPlayerId} class={m.ItemClass} amount={m.Amount} health={m.Health}");
 link.ItemClaimResolved += m => Console.WriteLine(
     $"[peer] claim resolved: dropId={m.DropId} winner={m.WinnerPlayerId} (mine={m.WinnerPlayerId == link.LocalPlayerId})");
+link.PositionUpdateReceived += m => Console.WriteLine(
+    $"[peer] position update: playerId={m.PlayerId} pos={m.X:F2},{m.Y:F2},{m.Z:F2}");
 
 Console.WriteLine("[peer] ready. Commands: drop <classGuid> <amount> <health> | claim <dropId> | quit");
 while (true)
