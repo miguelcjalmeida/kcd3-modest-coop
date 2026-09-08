@@ -231,6 +231,7 @@ end
 --    forced on once below or the label silently never draws in a real
 --    playthrough.
 ItemSwap.peerMarkers = {}  -- playerId (string key) -> {markerName, labelName}
+ItemSwap.peerBasePositions = {}  -- playerId (string key) -> {x,y,z}, the peer's raw reported position (no height offset, no bob)
 ItemSwap.markerHeightOffset = 1.9  -- meters above the peer's reported (ground) position
 ItemSwap.labelHeightOffset = 1.4   -- meters above the peer's reported position (just below the marker's tip)
 ItemSwap.markerScale = 0.15
@@ -262,6 +263,15 @@ function ItemSwap_OnPeerPositionBody(playerId, x, y, z, name)
     if not basePos.x or not basePos.y or not basePos.z then return end
     name = (name and name ~= "") and name or ("Player " .. key)
 
+    -- Store the peer's raw position and let ItemSwap_AnimTick (running on
+    -- its own independent clock-driven loop) do the actual SetWorldPos,
+    -- adding the bob offset on top each cycle. This is deliberate, not
+    -- just simpler: it's what guarantees a position update can never reset
+    -- the bob animation's phase - this function no longer touches the
+    -- entity's transform at all once it exists, only the animation loop
+    -- does, and that loop's phase is a pure function of elapsed real time.
+    ItemSwap.peerBasePositions[key] = basePos
+
     local markerPos = { x = basePos.x, y = basePos.y, z = basePos.z + ItemSwap.markerHeightOffset }
     local labelPos = { x = basePos.x, y = basePos.y, z = basePos.z + ItemSwap.labelHeightOffset }
 
@@ -270,8 +280,6 @@ function ItemSwap_OnPeerPositionBody(playerId, x, y, z, name)
         local markerEnt = System.GetEntityByName(rec.markerName)
         local labelEnt = System.GetEntityByName(rec.labelName)
         if markerEnt and labelEnt then
-            pcall(function() markerEnt:SetWorldPos(markerPos) end)
-            pcall(function() labelEnt:SetWorldPos(labelPos) end)
             return
         end
         -- One or both entities are gone (shouldn't normally happen - neither
@@ -311,12 +319,79 @@ function ItemSwap_OnPeerLeft(playerId)
     local key = tostring(playerId)
     local rec = ItemSwap.peerMarkers[key]
     ItemSwap.peerMarkers[key] = nil
+    ItemSwap.peerBasePositions[key] = nil
     if not rec then return end
     local markerEnt = System.GetEntityByName(rec.markerName)
     if markerEnt then pcall(function() System.RemoveEntity(markerEnt.id) end) end
     local labelEnt = System.GetEntityByName(rec.labelName)
     if labelEnt then pcall(function() System.RemoveEntity(labelEnt.id) end) end
 end
+
+-- ===== Milestone 3: marker idle animation =====
+-- A gentle, continuous up/down bob on every peer marker+label, independent
+-- of position updates: this loop is the ONLY thing that ever calls
+-- SetWorldPos on a marker/label once it exists (ItemSwap_OnPeerPosition
+-- just records the peer's latest raw position and returns). The bob's
+-- phase comes from a single elapsed-time counter started once in
+-- ItemSwap_AnimOn, never touched by anything else - so receiving a fresh
+-- position, no matter how often, cannot restart or desync the animation.
+ItemSwap.animRunning = false
+ItemSwap.animIntervalMs = 33     -- ~30Hz: smooth for a slow bob without being wasteful
+ItemSwap.animAmplitude = 0.1125  -- meters of vertical travel each way - "just a bit" (25% less than the first pass's 0.15)
+ItemSwap.animPeriodSec = 2.0     -- seconds for one full up-down-up cycle
+ItemSwap.animStartClock = nil    -- os.clock() reference point captured once in ItemSwap_AnimOn
+
+function ItemSwap_AnimTick()
+    if not ItemSwap.animRunning then return end
+    Script.SetTimer(ItemSwap.animIntervalMs, ItemSwap_AnimTick)  -- reschedule first, same reasoning as ItemSwap_DetectTick
+    local ok, err = pcall(ItemSwap_AnimTickBody)
+    if not ok then
+        System.LogAlways("[ITEMSWAP-ERR] AnimTick failed (loop kept alive): " .. tostring(err))
+    end
+end
+
+function ItemSwap_AnimTickBody()
+    local elapsed = os.clock() - ItemSwap.animStartClock
+    local phase = (elapsed / ItemSwap.animPeriodSec) * 2 * math.pi
+    local bob = math.sin(phase) * ItemSwap.animAmplitude
+
+    for key, rec in pairs(ItemSwap.peerMarkers) do
+        local base = ItemSwap.peerBasePositions[key]
+        if base then
+            local markerEnt = System.GetEntityByName(rec.markerName)
+            if markerEnt then
+                pcall(function()
+                    markerEnt:SetWorldPos({ x = base.x, y = base.y, z = base.z + ItemSwap.markerHeightOffset + bob })
+                end)
+            end
+            local labelEnt = System.GetEntityByName(rec.labelName)
+            if labelEnt then
+                pcall(function()
+                    labelEnt:SetWorldPos({ x = base.x, y = base.y, z = base.z + ItemSwap.labelHeightOffset + bob })
+                end)
+            end
+        end
+    end
+end
+
+-- Started by the agent the same way as itemswap_detect_on: sent as a bare
+-- console command (never a '#'-eval), the only form that reliably starts a
+-- Script.SetTimer chain - see the note near itemswap_detect_on below.
+function ItemSwap_AnimOn()
+    if ItemSwap.animRunning then return end
+    ItemSwap.animRunning = true
+    ItemSwap.animStartClock = os.clock()
+    System.LogAlways("[ITEMSWAP] marker animation ON")
+    Script.SetTimer(ItemSwap.animIntervalMs, ItemSwap_AnimTick)
+end
+
+function ItemSwap_AnimOff()
+    ItemSwap.animRunning = false
+    System.LogAlways("[ITEMSWAP] marker animation OFF")
+end
+
+System.AddCCommand("itemswap_anim_on", "ItemSwap_AnimOn()", "ItemSwap Milestone 3: start marker bob animation")
+System.AddCCommand("itemswap_anim_off", "ItemSwap_AnimOff()", "ItemSwap Milestone 3: stop marker bob animation")
 
 -- ===== Phase 1: automatic drop detection =====
 -- Dual-gate, checked every tick: (a) a PickableItem entity appeared near the

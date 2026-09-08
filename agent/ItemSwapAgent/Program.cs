@@ -124,9 +124,11 @@ logTail.LineRead += async line =>
         // from the Startup script's own top-level execution (confirmed
         // live, docs/PHASE1-FINDINGS.md). This is not optional: skip it and
         // the detector silently does nothing for the whole session.
-        Console.WriteLine("[agent] game (re)loaded the mod - arming the drop detector");
+        Console.WriteLine("[agent] game (re)loaded the mod - arming the drop detector and marker animation");
         try { await rc.SendCommandAsync("itemswap_detect_on"); }
         catch (Exception ex) { Console.WriteLine($"[agent] failed to arm detector: {ex.Message}"); }
+        try { await rc.SendCommandAsync("itemswap_anim_on"); }
+        catch (Exception ex) { Console.WriteLine($"[agent] failed to arm marker animation: {ex.Message}"); }
         return;
     }
 
