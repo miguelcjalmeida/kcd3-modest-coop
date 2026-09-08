@@ -334,9 +334,9 @@ public sealed class PeerLink : IAsyncDisposable
     }
 
     /// <summary>Call periodically with THIS player's own current position, so others can show a presence marker for them.</summary>
-    public async Task NotifyLocalPositionAsync(float x, float y, float z, bool isCrouching = false, float currentHp = 0f, float maxHp = 0f)
+    public async Task NotifyLocalPositionAsync(float x, float y, float z, bool isCrouching = false, float currentHp = 0f, float maxHp = 0f, bool inCombat = false, bool inDanger = false, bool inTense = false, bool inDialog = false, bool inRiding = false, bool inPickpocketing = false, bool inUnconscious = false, bool inDead = false, bool inWanted = false, bool inArmed = false, bool inCarryingCorpse = false)
     {
-        var msg = new PositionUpdateMessage(LocalPlayerId, x, y, z, isCrouching, currentHp, maxHp);
+        var msg = new PositionUpdateMessage(LocalPlayerId, x, y, z, isCrouching, currentHp, maxHp, inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing, inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse);
 
         if (_isHost)
             await BroadcastAsync(Protocol.Encode(msg)).ConfigureAwait(false);

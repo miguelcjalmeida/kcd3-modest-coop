@@ -253,6 +253,19 @@ ItemSwap.peerLabelHidden = {}  -- key -> bool, whether this peer's labels are cu
 ItemSwap.peerNames = {}        -- key -> display name, kept for the F2 peer panel (not otherwise stored outside the label entity's own Text)
 ItemSwap.labelMaxDistance = 300     -- meters from the local player beyond which a peer's labels (not their marker) are hidden
 
+-- Milestone 7: [Dueling]/[Danger] panel tags.
+ItemSwap.peerCombat = {}  -- key -> bool, latest reported IsInCombatMode() for that peer
+ItemSwap.peerDanger = {}  -- key -> bool, latest reported IsInCombatDanger() for that peer
+ItemSwap.peerCaught = {}   -- key -> bool, latest reported IsInTenseCircumstance() for that peer
+ItemSwap.peerTalking = {}  -- key -> bool, latest reported IsInDialog() for that peer
+ItemSwap.peerRiding = {}   -- key -> bool, latest reported IsMounted() for that peer
+ItemSwap.peerPickpocketing = {}  -- key -> bool, latest reported IsPickpocketing() for that peer
+ItemSwap.peerUnconscious = {}     -- key -> bool, latest reported IsUnconscious() for that peer
+ItemSwap.peerDead = {}            -- key -> bool, latest reported IsDead() for that peer
+ItemSwap.peerWanted = {}          -- key -> bool, latest reported IsPublicEnemy() for that peer
+ItemSwap.peerArmed = {}           -- key -> bool, latest reported IsWeaponDrawn() for that peer
+ItemSwap.peerCarryingCorpse = {}  -- key -> bool, latest reported IsCarryingCorpse() for that peer
+
 System.SetCVar('cl_comment', 1)  -- required once: Comment entities no-op their per-frame draw otherwise
 
 -- Starts (or redirects, if one is already in flight) a smooth height
@@ -278,7 +291,7 @@ end
 
 -- Called by the agent (one-shot '#'-eval is fine, no timer involved) on
 -- every position update relayed from a peer:
---   #ItemSwap_OnPeerPosition(<playerId>, <x>, <y>, <z>, "<name>", <isCrouching>, <curHp>, <maxHp>)
+--   #ItemSwap_OnPeerPosition(<playerId>, <x>, <y>, <z>, "<name>", <isCrouching>, <curHp>, <maxHp>, <inCombat>, <inDanger>, <inTense>, <inDialog>, <inRiding>, <inPickpocketing>, <inUnconscious>, <inDead>, <inWanted>, <inArmed>, <inCarryingCorpse>)
 -- Moves the existing marker+label if they exist for this player, or creates them.
 --
 -- Entirely wrapped in pcall: this runs as a raw one-shot RC eval with no
@@ -287,14 +300,14 @@ end
 -- otherwise surface only as a raw Lua error the player has no reason to
 -- notice, silently leaving their marker missing or stuck with no
 -- indication why. Logs [ITEMSWAP-ERR] instead.
-function ItemSwap_OnPeerPosition(playerId, x, y, z, name, isCrouching, curHp, maxHp)
-    local ok, err = pcall(ItemSwap_OnPeerPositionBody, playerId, x, y, z, name, isCrouching, curHp, maxHp)
+function ItemSwap_OnPeerPosition(playerId, x, y, z, name, isCrouching, curHp, maxHp, inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing, inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse)
+    local ok, err = pcall(ItemSwap_OnPeerPositionBody, playerId, x, y, z, name, isCrouching, curHp, maxHp, inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing, inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse)
     if not ok then
         System.LogAlways("[ITEMSWAP-ERR] OnPeerPosition threw for player " .. tostring(playerId) .. ": " .. tostring(err))
     end
 end
 
-function ItemSwap_OnPeerPositionBody(playerId, x, y, z, name, isCrouching, curHp, maxHp)
+function ItemSwap_OnPeerPositionBody(playerId, x, y, z, name, isCrouching, curHp, maxHp, inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing, inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse)
     local key = tostring(playerId)
     local basePos = { x = tonumber(x), y = tonumber(y), z = tonumber(z) }
     if not basePos.x or not basePos.y or not basePos.z then return end
@@ -383,6 +396,18 @@ function ItemSwap_OnPeerPositionBody(playerId, x, y, z, name, isCrouching, curHp
     if curHp and maxHp and maxHp > 0 then
         ItemSwap.peerHealth[key] = { cur = curHp, max = maxHp }
     end
+
+    ItemSwap.peerCombat[key] = inCombat == true
+    ItemSwap.peerDanger[key] = inDanger == true
+    ItemSwap.peerCaught[key] = inTense == true
+    ItemSwap.peerTalking[key] = inDialog == true
+    ItemSwap.peerRiding[key] = inRiding == true
+    ItemSwap.peerPickpocketing[key] = inPickpocketing == true
+    ItemSwap.peerUnconscious[key] = inUnconscious == true
+    ItemSwap.peerDead[key] = inDead == true
+    ItemSwap.peerWanted[key] = inWanted == true
+    ItemSwap.peerArmed[key] = inArmed == true
+    ItemSwap.peerCarryingCorpse[key] = inCarryingCorpse == true
 end
 
 -- Called by the agent when a peer disconnects, so their marker doesn't sit
@@ -399,6 +424,17 @@ function ItemSwap_OnPeerLeft(playerId)
     ItemSwap.peerHealth[key] = nil
     ItemSwap.peerLabelHidden[key] = nil
     ItemSwap.peerNames[key] = nil
+    ItemSwap.peerCombat[key] = nil
+    ItemSwap.peerDanger[key] = nil
+    ItemSwap.peerCaught[key] = nil
+    ItemSwap.peerTalking[key] = nil
+    ItemSwap.peerRiding[key] = nil
+    ItemSwap.peerPickpocketing[key] = nil
+    ItemSwap.peerUnconscious[key] = nil
+    ItemSwap.peerDead[key] = nil
+    ItemSwap.peerWanted[key] = nil
+    ItemSwap.peerArmed[key] = nil
+    ItemSwap.peerCarryingCorpse[key] = nil
     if not rec then return end
     local markerEnt = System.GetEntityByName(rec.markerName)
     if markerEnt then pcall(function() System.RemoveEntity(markerEnt.id) end) end
@@ -645,7 +681,62 @@ function ItemSwap_PanelTickBody()
         local hr, hg, hb
         if frac > 0.4 then hr, hg, hb = 0.5, 1, 0.5 else hr, hg, hb = 1, 0.5, 0.5 end
         ItemSwap_DrawTextOutlined(x, y, hpText, 2.0, hr, hg, hb)
-        y = y + blockGap
+        y = y + hpGap
+
+        -- Optional third line, only drawn when there's something to say -
+        -- most peers most of the time are fighting nothing, and an empty
+        -- line for every single one would just be clutter.
+        local combat = ItemSwap.peerCombat[key]
+        local danger = ItemSwap.peerDanger[key]
+        local caught = ItemSwap.peerCaught[key]
+        local talking = ItemSwap.peerTalking[key]
+        local riding = ItemSwap.peerRiding[key]
+        local pickpocketing = ItemSwap.peerPickpocketing[key]
+        local unconscious = ItemSwap.peerUnconscious[key]
+        local dead = ItemSwap.peerDead[key]
+        local wanted = ItemSwap.peerWanted[key]
+        local armed = ItemSwap.peerArmed[key]
+        local carryingCorpse = ItemSwap.peerCarryingCorpse[key]
+        if combat or danger or caught or talking or riding or pickpocketing
+            or unconscious or dead or wanted or armed or carryingCorpse then
+            local tags = {}
+            if dead then tags[#tags + 1] = "[Dead]" end
+            if unconscious then tags[#tags + 1] = "[Unconscious]" end
+            if combat then tags[#tags + 1] = "[Dueling]" end
+            if danger then tags[#tags + 1] = "[Danger]" end
+            if caught then tags[#tags + 1] = "[Caught]" end
+            if wanted then tags[#tags + 1] = "[Wanted]" end
+            if talking then tags[#tags + 1] = "[Talking]" end
+            if riding then tags[#tags + 1] = "[Riding]" end
+            if pickpocketing then tags[#tags + 1] = "[Pickpocketing]" end
+            if armed then tags[#tags + 1] = "[Armed]" end
+            if carryingCorpse then tags[#tags + 1] = "[Burying]" end
+            -- Priority, most to least urgent: [Dead] (somber grey - already
+            -- happened, alarm doesn't help) > [Unconscious] (deep orange-red,
+            -- knocked out) > [Caught] (a pursuer has actually spotted the
+            -- peer, harsher red than the general orange/danger tint) >
+            -- [Pickpocketing] (own distinct yellow, getting caught
+            -- red-handed ends badly). Everything else not already covered
+            -- by the general orange/danger tint - [Talking], [Riding],
+            -- [Armed], [Burying] alone - gets a calm blue instead of
+            -- the alarming palette, since none of those alone is a warning.
+            local tr, tg, tb = 1, 0.6, 0.2
+            if dead then
+                tr, tg, tb = 0.6, 0.6, 0.6
+            elseif unconscious then
+                tr, tg, tb = 1, 0.4, 0
+            elseif caught then
+                tr, tg, tb = 1, 0.15, 0.15
+            elseif pickpocketing then
+                tr, tg, tb = 1, 0.9, 0.2
+            elseif (talking or riding or armed or carryingCorpse) and not (combat or danger or wanted) then
+                tr, tg, tb = 0.4, 0.8, 1
+            end
+            ItemSwap_DrawTextOutlined(x, y, table.concat(tags, " "), 2.0, tr, tg, tb)
+            y = y + hpGap
+        end
+
+        y = y + (blockGap - hpGap)
     end
     if not any then
         ItemSwap_DrawTextOutlined(x, y, "(no peers connected)", 2.4)
@@ -863,6 +954,61 @@ function ItemSwap_GetLocalPlayerHealth()
     return cur, max
 end
 
+-- Both confirmed live against a real sparring match, and confirmed to be
+-- genuinely DIFFERENT signals, not aliases: IsInCombatMode() tracks
+-- momentary active engagement (flips false the instant you turn away from
+-- an opponent), IsInCombatDanger() stays true for the whole encounter
+-- regardless of facing. [Dueling] uses the former, [Danger] the latter.
+--
+-- IsInTenseCircumstance() ([Caught]) was found by the user, not guessed:
+-- this game's own HUD shows a rabbit icon while a pursuer is searching for
+-- the player (white), an intermediate state while investigating (yellow -
+-- confirmed live no general API exists for this one; it was also too brief
+-- to reliably poll even if it did), and two rabbits fighting the instant a
+-- pursuer actually spots the player for real, which is exactly when this
+-- flips true. AI.GetAlertness/GetGroupAlertness(player.id) were tried for
+-- the yellow state and confirmed live to read 0 throughout all three -
+-- alertness is a property of the pursuing NPC, not the player, so querying
+-- it from the player's own id was the wrong angle; not pursued further.
+-- InDialog ([Talking]) is read here too, despite the function's name being
+-- about combat - confirmed live to correctly flip true/false around a real
+-- NPC conversation, and piggybacking it onto this same poll/emit avoids a
+-- second near-identical function and a second call at the DetectTickBody
+-- site for what's fundamentally the same kind of "peer status" data.
+--
+-- InRiding ([Riding], player.human:IsMounted()) and InPickpocketing
+-- ([Pickpocketing], player.human:IsPickpocketing()) are read here for the
+-- same reason - both confirmed live to be real booleans. A third candidate,
+-- IsOnLadder() for a [Climbing] tag, was tested and found to return a
+-- number (0) rather than a real boolean, unlike every other flag here -
+-- deliberately left out rather than special-cased, per the user's call.
+--
+-- InUnconscious (player.actor:IsUnconscious()), InDead (player.actor:IsDead()),
+-- InWanted (player.soul:IsPublicEnemy()), InArmed (player.human:IsWeaponDrawn()),
+-- and InCarryingCorpse (player.actor:IsCarryingCorpse()) round out the panel
+-- tags - all five individually type-checked live as real booleans before
+-- being wired up here, same discipline as every flag above.
+function ItemSwap_GetLocalCombatState()
+    if not player or not player.soul or not player.human or not player.actor then
+        return false, false, false, false, false, false, false, false, false, false, false
+    end
+    local ok1, mode = pcall(function() return player.soul:IsInCombatMode() end)
+    local ok2, danger = pcall(function() return player.soul:IsInCombatDanger() end)
+    local ok3, tense = pcall(function() return player.soul:IsInTenseCircumstance() end)
+    local ok4, dialog = pcall(function() return player.human:IsInDialog() end)
+    local ok5, mounted = pcall(function() return player.human:IsMounted() end)
+    local ok6, pickpocketing = pcall(function() return player.human:IsPickpocketing() end)
+    local ok7, unconscious = pcall(function() return player.actor:IsUnconscious() end)
+    local ok8, dead = pcall(function() return player.actor:IsDead() end)
+    local ok9, wanted = pcall(function() return player.soul:IsPublicEnemy() end)
+    local ok10, armed = pcall(function() return player.human:IsWeaponDrawn() end)
+    local ok11, carryingCorpse = pcall(function() return player.actor:IsCarryingCorpse() end)
+    return (ok1 and mode == true), (ok2 and danger == true), (ok3 and tense == true), (ok4 and dialog == true),
+        (ok5 and mounted == true), (ok6 and pickpocketing == true),
+        (ok7 and unconscious == true), (ok8 and dead == true), (ok9 and wanted == true),
+        (ok10 and armed == true), (ok11 and carryingCorpse == true)
+end
+
 function ItemSwap_DetectTick()
     if not ItemSwap.detectRunning then return end
     Script.SetTimer(ItemSwap.detectIntervalMs, ItemSwap_DetectTick)  -- reschedule first: belt-and-braces alongside the pcall below
@@ -898,8 +1044,12 @@ function ItemSwap_DetectTickBody()
     -- output minimal.
     local crouching = ItemSwap_IsLocalPlayerCrouching()
     local curHp, maxHp = ItemSwap_GetLocalPlayerHealth()
-    System.LogAlways(string.format("[ITEMSWAP-EVT] pos %.3f %.3f %.3f %d %.1f %.1f",
-        pos.x, pos.y, pos.z, crouching and 1 or 0, curHp, maxHp))
+    local inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing,
+        inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse = ItemSwap_GetLocalCombatState()
+    System.LogAlways(string.format("[ITEMSWAP-EVT] pos %.3f %.3f %.3f %d %.1f %.1f %d %d %d %d %d %d %d %d %d %d %d",
+        pos.x, pos.y, pos.z, crouching and 1 or 0, curHp, maxHp, inCombat and 1 or 0, inDanger and 1 or 0, inTense and 1 or 0, inDialog and 1 or 0,
+        inRiding and 1 or 0, inPickpocketing and 1 or 0,
+        inUnconscious and 1 or 0, inDead and 1 or 0, inWanted and 1 or 0, inArmed and 1 or 0, inCarryingCorpse and 1 or 0))
 
     local newCounts = ItemSwap_InventoryCounts()
 

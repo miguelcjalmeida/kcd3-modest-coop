@@ -69,8 +69,41 @@ public sealed record ItemClaimResolvedMessage(uint DropId, byte WinnerPlayerId);
 /// means "unknown" (e.g. before the sender's first successful read), not
 /// "dead" - a receiver should render "HP: ?/?" rather than "HP: 0/0" for
 /// that case.
+///
+/// InCombat/InDanger are Milestone 7's [Dueling]/[Danger] panel tags, from
+/// player.soul:IsInCombatMode()/IsInCombatDanger() - both confirmed live to
+/// be real, dynamic reads (verified against an actual sparring match).
+/// InCombat tracks momentary active engagement (flips off the instant you
+/// turn away from an opponent); InDanger stays true for the whole
+/// encounter regardless of facing - confirmed live they're genuinely
+/// different signals, not aliases of each other.
+///
+/// InTense is the [Caught] tag, from player.soul:IsInTenseCircumstance().
+/// Discovered live by the user, not guessed: this is the "being actively
+/// hunted and spotted" state - the game's own HUD shows a rabbit icon that
+/// starts merely "searching" (this reads false) and becomes two rabbits
+/// fighting the instant a pursuer actually sees the player for real (this
+/// flips true).
+///
+/// InDialog is the [Talking] tag, from player.human:IsInDialog() - confirmed
+/// live to correctly flip true/false around a real NPC conversation.
+///
+/// InRiding is the [Riding] tag, from player.human:IsMounted(). InPickpocketing
+/// is the [Pickpocketing] tag, from player.human:IsPickpocketing(). Both
+/// confirmed live to be real booleans. A third candidate, IsOnLadder() for a
+/// [Climbing] tag, was tested and found to return a number (0), not a real
+/// boolean, unlike every other flag here - deliberately skipped rather than
+/// special-cased, per the user's call.
+///
+/// InUnconscious ([Unconscious], player.actor:IsUnconscious()), InDead
+/// ([Dead], player.actor:IsDead()), InWanted ([Wanted],
+/// player.soul:IsPublicEnemy()), InArmed ([Armed],
+/// player.human:IsWeaponDrawn()), and InCarryingCorpse ([Carrying Body],
+/// player.actor:IsCarryingCorpse()) round out the panel tags - all five
+/// individually type-checked live (real booleans, no IsOnLadder-style
+/// surprises) before being wired up.
 /// </summary>
-public sealed record PositionUpdateMessage(byte PlayerId, float X, float Y, float Z, bool IsCrouching, float CurrentHp, float MaxHp);
+public sealed record PositionUpdateMessage(byte PlayerId, float X, float Y, float Z, bool IsCrouching, float CurrentHp, float MaxHp, bool InCombat, bool InDanger, bool InTense, bool InDialog, bool InRiding, bool InPickpocketing, bool InUnconscious, bool InDead, bool InWanted, bool InArmed, bool InCarryingCorpse);
 
 public static class Protocol
 {
@@ -237,7 +270,7 @@ public static class Protocol
 
     public static byte[] Encode(PositionUpdateMessage m)
     {
-        var payload = new byte[22];
+        var payload = new byte[33];
         var span = payload.AsSpan();
         span[0] = m.PlayerId;
         BitConverter.TryWriteBytes(span[1..5], m.X);
@@ -246,6 +279,17 @@ public static class Protocol
         span[13] = (byte)(m.IsCrouching ? 1 : 0);
         BitConverter.TryWriteBytes(span[14..18], m.CurrentHp);
         BitConverter.TryWriteBytes(span[18..22], m.MaxHp);
+        span[22] = (byte)(m.InCombat ? 1 : 0);
+        span[23] = (byte)(m.InDanger ? 1 : 0);
+        span[24] = (byte)(m.InTense ? 1 : 0);
+        span[25] = (byte)(m.InDialog ? 1 : 0);
+        span[26] = (byte)(m.InRiding ? 1 : 0);
+        span[27] = (byte)(m.InPickpocketing ? 1 : 0);
+        span[28] = (byte)(m.InUnconscious ? 1 : 0);
+        span[29] = (byte)(m.InDead ? 1 : 0);
+        span[30] = (byte)(m.InWanted ? 1 : 0);
+        span[31] = (byte)(m.InArmed ? 1 : 0);
+        span[32] = (byte)(m.InCarryingCorpse ? 1 : 0);
         return EncodeFrame(MessageType.PositionUpdate, payload);
     }
 
@@ -259,6 +303,17 @@ public static class Protocol
             Z: BitConverter.ToSingle(span[9..13]),
             IsCrouching: span[13] != 0,
             CurrentHp: BitConverter.ToSingle(span[14..18]),
-            MaxHp: BitConverter.ToSingle(span[18..22]));
+            MaxHp: BitConverter.ToSingle(span[18..22]),
+            InCombat: span[22] != 0,
+            InDanger: span[23] != 0,
+            InTense: span[24] != 0,
+            InDialog: span[25] != 0,
+            InRiding: span.Length > 26 && span[26] != 0,
+            InPickpocketing: span.Length > 27 && span[27] != 0,
+            InUnconscious: span.Length > 28 && span[28] != 0,
+            InDead: span.Length > 29 && span[29] != 0,
+            InWanted: span.Length > 30 && span[30] != 0,
+            InArmed: span.Length > 31 && span[31] != 0,
+            InCarryingCorpse: span.Length > 32 && span[32] != 0);
     }
 }

@@ -92,7 +92,18 @@ peerLink.PositionUpdateReceived += async msg =>
         var crouching = msg.IsCrouching ? "true" : "false";
         var curHp = msg.CurrentHp.ToString(CultureInfo.InvariantCulture);
         var maxHp = msg.MaxHp.ToString(CultureInfo.InvariantCulture);
-        await rc.SendLuaAsync($"ItemSwap_OnPeerPosition({msg.PlayerId}, {x}, {y}, {z}, '{escapedName}', {crouching}, {curHp}, {maxHp})");
+        var inCombat = msg.InCombat ? "true" : "false";
+        var inDanger = msg.InDanger ? "true" : "false";
+        var inTense = msg.InTense ? "true" : "false";
+        var inDialog = msg.InDialog ? "true" : "false";
+        var inRiding = msg.InRiding ? "true" : "false";
+        var inPickpocketing = msg.InPickpocketing ? "true" : "false";
+        var inUnconscious = msg.InUnconscious ? "true" : "false";
+        var inDead = msg.InDead ? "true" : "false";
+        var inWanted = msg.InWanted ? "true" : "false";
+        var inArmed = msg.InArmed ? "true" : "false";
+        var inCarryingCorpse = msg.InCarryingCorpse ? "true" : "false";
+        await rc.SendLuaAsync($"ItemSwap_OnPeerPosition({msg.PlayerId}, {x}, {y}, {z}, '{escapedName}', {crouching}, {curHp}, {maxHp}, {inCombat}, {inDanger}, {inTense}, {inDialog}, {inRiding}, {inPickpocketing}, {inUnconscious}, {inDead}, {inWanted}, {inArmed}, {inCarryingCorpse})");
     }
     catch (Exception ex)
     {
@@ -176,11 +187,13 @@ logTail.LineRead += async line =>
                 await peerLink.NotifyLocalClaimAsync(claimDropId);
                 break;
 
-            // pos <x> <y> <z> <crouching> <curHp> <maxHp> - piggybacks the
-            // same detect tick. <crouching> is "1"/"0"; each trailing field
-            // is optional and defaults to "not crouching"/"HP unknown"
-            // rather than failing the whole match, so an older mod build
-            // missing the newer fields still works.
+            // pos <x> <y> <z> <crouching> <curHp> <maxHp> <inCombat> <inDanger> -
+            // piggybacks the same detect tick. <crouching>/<inCombat>/<inDanger>/
+            // <inTense>/<inDialog>/<inRiding>/<inPickpocketing>/<inUnconscious>/
+            // <inDead>/<inWanted>/<inArmed>/<inCarryingCorpse> are "1"/"0";
+            // each trailing field is optional and defaults to "off" rather
+            // than failing the whole match, so an older mod build missing
+            // the newer fields still works.
             // No console line here either, same reasoning as the receive side.
             case "pos" when parts.Length >= 4
                 && float.TryParse(parts[1], CultureInfo.InvariantCulture, out var px)
@@ -189,7 +202,18 @@ logTail.LineRead += async line =>
                 var pCrouching = parts.Length >= 5 && parts[4] == "1";
                 var pCurHp = parts.Length >= 6 && float.TryParse(parts[5], CultureInfo.InvariantCulture, out var chp) ? chp : 0f;
                 var pMaxHp = parts.Length >= 7 && float.TryParse(parts[6], CultureInfo.InvariantCulture, out var mhp) ? mhp : 0f;
-                await peerLink.NotifyLocalPositionAsync(px, py, pz, pCrouching, pCurHp, pMaxHp);
+                var pInCombat = parts.Length >= 8 && parts[7] == "1";
+                var pInDanger = parts.Length >= 9 && parts[8] == "1";
+                var pInTense = parts.Length >= 10 && parts[9] == "1";
+                var pInDialog = parts.Length >= 11 && parts[10] == "1";
+                var pInRiding = parts.Length >= 12 && parts[11] == "1";
+                var pInPickpocketing = parts.Length >= 13 && parts[12] == "1";
+                var pInUnconscious = parts.Length >= 14 && parts[13] == "1";
+                var pInDead = parts.Length >= 15 && parts[14] == "1";
+                var pInWanted = parts.Length >= 16 && parts[15] == "1";
+                var pInArmed = parts.Length >= 17 && parts[16] == "1";
+                var pInCarryingCorpse = parts.Length >= 18 && parts[17] == "1";
+                await peerLink.NotifyLocalPositionAsync(px, py, pz, pCrouching, pCurHp, pMaxHp, pInCombat, pInDanger, pInTense, pInDialog, pInRiding, pInPickpocketing, pInUnconscious, pInDead, pInWanted, pInArmed, pInCarryingCorpse);
                 break;
         }
     }

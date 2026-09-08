@@ -13,7 +13,7 @@ if (args.Length < 3)
     Console.WriteLine("Then type commands:");
     Console.WriteLine("  drop <itemClassGuid> <amount> <health> [x] [y] [z]   - simulate this fake player dropping an item (position optional)");
     Console.WriteLine("  claim <dropId>                            - simulate this fake player picking up a tracked drop");
-    Console.WriteLine("  pos <x> <y> <z> [crouching] [curHp] [maxHp]  - simulate this fake player's position (crouching: 1/true; HP optional, defaults to unknown)");
+    Console.WriteLine("  pos <x> <y> <z> [crouching] [curHp] [maxHp] [inCombat] [inDanger] [inTense] [inDialog] [inRiding] [inPickpocketing] [inUnconscious] [inDead] [inWanted] [inArmed] [inCarryingCorpse]  - simulate this fake player's position (bool fields: 1/true; HP optional, defaults to unknown)");
     Console.WriteLine("  quit");
     return 1;
 }
@@ -87,8 +87,19 @@ while (true)
             var crouching = parts.Length >= 5 && (parts[4] == "1" || parts[4].Equals("true", StringComparison.OrdinalIgnoreCase));
             var curHp = parts.Length >= 6 ? float.Parse(parts[5], CultureInfo.InvariantCulture) : 0f;
             var maxHp = parts.Length >= 7 ? float.Parse(parts[6], CultureInfo.InvariantCulture) : 0f;
-            await link.NotifyLocalPositionAsync(x, y, z, crouching, curHp, maxHp);
-            Console.WriteLine($"[peer] sent position {x},{y},{z} crouching={crouching} hp={curHp}/{maxHp}");
+            var inCombat = parts.Length >= 8 && (parts[7] == "1" || parts[7].Equals("true", StringComparison.OrdinalIgnoreCase));
+            var inDanger = parts.Length >= 9 && (parts[8] == "1" || parts[8].Equals("true", StringComparison.OrdinalIgnoreCase));
+            var inTense = parts.Length >= 10 && (parts[9] == "1" || parts[9].Equals("true", StringComparison.OrdinalIgnoreCase));
+            var inDialog = parts.Length >= 11 && (parts[10] == "1" || parts[10].Equals("true", StringComparison.OrdinalIgnoreCase));
+            var inRiding = parts.Length >= 12 && (parts[11] == "1" || parts[11].Equals("true", StringComparison.OrdinalIgnoreCase));
+            var inPickpocketing = parts.Length >= 13 && (parts[12] == "1" || parts[12].Equals("true", StringComparison.OrdinalIgnoreCase));
+            var inUnconscious = parts.Length >= 14 && (parts[13] == "1" || parts[13].Equals("true", StringComparison.OrdinalIgnoreCase));
+            var inDead = parts.Length >= 15 && (parts[14] == "1" || parts[14].Equals("true", StringComparison.OrdinalIgnoreCase));
+            var inWanted = parts.Length >= 16 && (parts[15] == "1" || parts[15].Equals("true", StringComparison.OrdinalIgnoreCase));
+            var inArmed = parts.Length >= 17 && (parts[16] == "1" || parts[16].Equals("true", StringComparison.OrdinalIgnoreCase));
+            var inCarryingCorpse = parts.Length >= 18 && (parts[17] == "1" || parts[17].Equals("true", StringComparison.OrdinalIgnoreCase));
+            await link.NotifyLocalPositionAsync(x, y, z, crouching, curHp, maxHp, inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing, inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse);
+            Console.WriteLine($"[peer] sent position {x},{y},{z} crouching={crouching} hp={curHp}/{maxHp} inCombat={inCombat} inDanger={inDanger} inTense={inTense} inDialog={inDialog} inRiding={inRiding} inPickpocketing={inPickpocketing} inUnconscious={inUnconscious} inDead={inDead} inWanted={inWanted} inArmed={inArmed} inCarryingCorpse={inCarryingCorpse}");
         }
         else
         {
