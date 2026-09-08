@@ -89,7 +89,8 @@ peerLink.PositionUpdateReceived += async msg =>
         // Lua call outright, not a full sandboxing (RC already assumes a
         // trusted, shared-secret-gated peer per the README's threat model).
         var escapedName = name.Replace("\\", "\\\\").Replace("'", "\\'");
-        await rc.SendLuaAsync($"ItemSwap_OnPeerPosition({msg.PlayerId}, {x}, {y}, {z}, '{escapedName}')");
+        var crouching = msg.IsCrouching ? "true" : "false";
+        await rc.SendLuaAsync($"ItemSwap_OnPeerPosition({msg.PlayerId}, {x}, {y}, {z}, '{escapedName}', {crouching})");
     }
     catch (Exception ex)
     {
@@ -167,13 +168,17 @@ logTail.LineRead += async line =>
                 await peerLink.NotifyLocalClaimAsync(claimDropId);
                 break;
 
-            // pos <x> <y> <z> - piggybacks the same detect tick, ~1.3Hz.
+            // pos <x> <y> <z> <crouching> - piggybacks the same detect tick.
+            // <crouching> is "1"/"0"; missing/unparsed defaults to not
+            // crouching rather than failing the whole match, so an older
+            // mod build without the crouch field still works.
             // No console line here either, same reasoning as the receive side.
             case "pos" when parts.Length >= 4
                 && float.TryParse(parts[1], CultureInfo.InvariantCulture, out var px)
                 && float.TryParse(parts[2], CultureInfo.InvariantCulture, out var py)
                 && float.TryParse(parts[3], CultureInfo.InvariantCulture, out var pz):
-                await peerLink.NotifyLocalPositionAsync(px, py, pz);
+                var pCrouching = parts.Length >= 5 && parts[4] == "1";
+                await peerLink.NotifyLocalPositionAsync(px, py, pz, pCrouching);
                 break;
         }
     }

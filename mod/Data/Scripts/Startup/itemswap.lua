@@ -237,11 +237,40 @@ ItemSwap.labelHeightOffset = 1.4   -- meters above the peer's reported position 
 ItemSwap.markerScale = 0.15
 ItemSwap.labelSize = 6.0
 
+-- Milestone 3 crouch state, keyed the same way as peerMarkers/peerBasePositions.
+ItemSwap.peerCrouching = {}        -- key -> bool, latest known crouch state
+ItemSwap.peerAnimPauseUntil = {}   -- key -> os.clock() timestamp; bob suppressed while os.clock() < this (math.huge while actively crouching)
+ItemSwap.peerHeightTransition = {} -- key -> {startClock, fromOffset, toOffset}, or nil once finished
+ItemSwap.crouchHeightReduction = 0.5   -- meters the marker sits lower while crouched
+ItemSwap.crouchTransitionSec = 0.35    -- seconds to ease to the new height when crouch state changes
+ItemSwap.crouchAnimCooldownSec = 10    -- seconds after standing back up before the bob resumes
+
 System.SetCVar('cl_comment', 1)  -- required once: Comment entities no-op their per-frame draw otherwise
+
+-- Starts (or redirects, if one is already in flight) a smooth height
+-- transition for one peer's marker, and sets how long the bob stays
+-- suppressed: indefinitely while crouching, or for crouchAnimCooldownSec
+-- after standing back up. If a transition is already in progress, the new
+-- one starts from wherever it currently is (not a hardcoded rest value),
+-- so rapid crouch-toggling can't produce a visible pop.
+function ItemSwap_BeginHeightTransition(key, wasCrouching, isCrouching)
+    local restOffset = function(crouching)
+        return crouching and (ItemSwap.markerHeightOffset - ItemSwap.crouchHeightReduction) or ItemSwap.markerHeightOffset
+    end
+    local fromOffset = restOffset(wasCrouching)
+    local trans = ItemSwap.peerHeightTransition[key]
+    if trans then
+        local t = math.min(1.0, (os.clock() - trans.startClock) / ItemSwap.crouchTransitionSec)
+        local eased = t * t * (3 - 2 * t)
+        fromOffset = trans.fromOffset + (trans.toOffset - trans.fromOffset) * eased
+    end
+    ItemSwap.peerHeightTransition[key] = { startClock = os.clock(), fromOffset = fromOffset, toOffset = restOffset(isCrouching) }
+    ItemSwap.peerAnimPauseUntil[key] = isCrouching and math.huge or (os.clock() + ItemSwap.crouchAnimCooldownSec)
+end
 
 -- Called by the agent (one-shot '#'-eval is fine, no timer involved) on
 -- every position update relayed from a peer:
---   #ItemSwap_OnPeerPosition(<playerId>, <x>, <y>, <z>, "<name>")
+--   #ItemSwap_OnPeerPosition(<playerId>, <x>, <y>, <z>, "<name>", <isCrouching>)
 -- Moves the existing marker+label if they exist for this player, or creates them.
 --
 -- Entirely wrapped in pcall: this runs as a raw one-shot RC eval with no
@@ -250,18 +279,19 @@ System.SetCVar('cl_comment', 1)  -- required once: Comment entities no-op their 
 -- otherwise surface only as a raw Lua error the player has no reason to
 -- notice, silently leaving their marker missing or stuck with no
 -- indication why. Logs [ITEMSWAP-ERR] instead.
-function ItemSwap_OnPeerPosition(playerId, x, y, z, name)
-    local ok, err = pcall(ItemSwap_OnPeerPositionBody, playerId, x, y, z, name)
+function ItemSwap_OnPeerPosition(playerId, x, y, z, name, isCrouching)
+    local ok, err = pcall(ItemSwap_OnPeerPositionBody, playerId, x, y, z, name, isCrouching)
     if not ok then
         System.LogAlways("[ITEMSWAP-ERR] OnPeerPosition threw for player " .. tostring(playerId) .. ": " .. tostring(err))
     end
 end
 
-function ItemSwap_OnPeerPositionBody(playerId, x, y, z, name)
+function ItemSwap_OnPeerPositionBody(playerId, x, y, z, name, isCrouching)
     local key = tostring(playerId)
     local basePos = { x = tonumber(x), y = tonumber(y), z = tonumber(z) }
     if not basePos.x or not basePos.y or not basePos.z then return end
     name = (name and name ~= "") and name or ("Player " .. key)
+    isCrouching = isCrouching == true
 
     -- Store the peer's raw position and let ItemSwap_AnimTick (running on
     -- its own independent clock-driven loop) do the actual SetWorldPos,
@@ -272,7 +302,19 @@ function ItemSwap_OnPeerPositionBody(playerId, x, y, z, name)
     -- does, and that loop's phase is a pure function of elapsed real time.
     ItemSwap.peerBasePositions[key] = basePos
 
-    local markerPos = { x = basePos.x, y = basePos.y, z = basePos.z + ItemSwap.markerHeightOffset }
+    -- A change in crouch state starts a smooth height transition and
+    -- (re)sets the bob-pause window. First sighting of a peer adopts
+    -- whatever state they're already in with no transition - nothing to
+    -- animate from yet, and their marker is about to spawn fresh anyway.
+    local wasCrouching = ItemSwap.peerCrouching[key]
+    if wasCrouching == nil then wasCrouching = isCrouching end
+    if isCrouching ~= wasCrouching then
+        ItemSwap_BeginHeightTransition(key, wasCrouching, isCrouching)
+    end
+    ItemSwap.peerCrouching[key] = isCrouching
+
+    local restHeightOffset = isCrouching and (ItemSwap.markerHeightOffset - ItemSwap.crouchHeightReduction) or ItemSwap.markerHeightOffset
+    local markerPos = { x = basePos.x, y = basePos.y, z = basePos.z + restHeightOffset }
     local labelPos = { x = basePos.x, y = basePos.y, z = basePos.z + ItemSwap.labelHeightOffset }
 
     local rec = ItemSwap.peerMarkers[key]
@@ -320,6 +362,9 @@ function ItemSwap_OnPeerLeft(playerId)
     local rec = ItemSwap.peerMarkers[key]
     ItemSwap.peerMarkers[key] = nil
     ItemSwap.peerBasePositions[key] = nil
+    ItemSwap.peerCrouching[key] = nil
+    ItemSwap.peerAnimPauseUntil[key] = nil
+    ItemSwap.peerHeightTransition[key] = nil
     if not rec then return end
     local markerEnt = System.GetEntityByName(rec.markerName)
     if markerEnt then pcall(function() System.RemoveEntity(markerEnt.id) end) end
@@ -354,20 +399,46 @@ function ItemSwap_AnimTickBody()
     local elapsed = os.clock() - ItemSwap.animStartClock
     local phase = (elapsed / ItemSwap.animPeriodSec) * 2 * math.pi
     local bob = math.sin(phase) * ItemSwap.animAmplitude
+    local now = os.clock()
 
     for key, rec in pairs(ItemSwap.peerMarkers) do
         local base = ItemSwap.peerBasePositions[key]
         if base then
+            -- Resolve this peer's current marker height: mid-transition
+            -- (crouch just started or ended) uses an eased blend toward the
+            -- new resting value; otherwise it's already at rest.
+            local heightOffset
+            local trans = ItemSwap.peerHeightTransition[key]
+            if trans then
+                local t = (now - trans.startClock) / ItemSwap.crouchTransitionSec
+                if t >= 1.0 then
+                    heightOffset = trans.toOffset
+                    ItemSwap.peerHeightTransition[key] = nil
+                else
+                    local eased = t * t * (3 - 2 * t)  -- smoothstep: gentler than linear
+                    heightOffset = trans.fromOffset + (trans.toOffset - trans.fromOffset) * eased
+                end
+            else
+                local isCrouching = ItemSwap.peerCrouching[key]
+                heightOffset = isCrouching and (ItemSwap.markerHeightOffset - ItemSwap.crouchHeightReduction) or ItemSwap.markerHeightOffset
+            end
+
+            -- Bob is suppressed while crouching, and for crouchAnimCooldownSec
+            -- after standing back up (peerAnimPauseUntil is set in
+            -- ItemSwap_BeginHeightTransition, never touched here).
+            local pauseUntil = ItemSwap.peerAnimPauseUntil[key] or 0
+            local effectiveBob = (now < pauseUntil) and 0 or bob
+
             local markerEnt = System.GetEntityByName(rec.markerName)
             if markerEnt then
                 pcall(function()
-                    markerEnt:SetWorldPos({ x = base.x, y = base.y, z = base.z + ItemSwap.markerHeightOffset + bob })
+                    markerEnt:SetWorldPos({ x = base.x, y = base.y, z = base.z + heightOffset + effectiveBob })
                 end)
             end
-            -- Label deliberately excludes `bob` - it still tracks the
-            -- peer's real position every tick, just without the marker's
-            -- oscillation, so the name stays readable/steady while the
-            -- marker above it bobs.
+            -- Label deliberately excludes `bob` and stays at its own fixed
+            -- height (unaffected by crouch) - it still tracks the peer's
+            -- real X/Y/Z every tick, just without the marker's vertical
+            -- games, so the name stays readable/steady regardless.
             local labelEnt = System.GetEntityByName(rec.labelName)
             if labelEnt then
                 pcall(function()
@@ -558,6 +629,25 @@ function ItemSwap_GetGroundItemClass(entity)
     return cls
 end
 
+-- No official "IsCrouching" API was found on player/player.actor/player.human
+-- (confirmed live: GetStance, IsCrouching, GetPhysicalizationProfile all
+-- either don't exist or don't reflect stance - GetPhysicalizationProfile
+-- returns "alive", a life-state, not a pose). Detected instead via a real
+-- physical signal: player.actor:GetHeadPos() drops by ~0.53m while
+-- crouching (confirmed live: standing ~1.57m above the feet position,
+-- crouching ~1.04m - matches BasicActor.lua's own stance table, where
+-- crouch's viewOffset.z is 1.1 against normal/combat's 1.6). 1.3 sits
+-- comfortably between the two.
+function ItemSwap_IsLocalPlayerCrouching()
+    if not player or not player.actor then return false end
+    local ok, headPos = pcall(function() return player.actor:GetHeadPos() end)
+    if not ok or not headPos then return false end
+    local feetPos = nil
+    pcall(function() feetPos = player:GetWorldPos() end)
+    if not feetPos then return false end
+    return (headPos.z - feetPos.z) < 1.3
+end
+
 function ItemSwap_DetectTick()
     if not ItemSwap.detectRunning then return end
     Script.SetTimer(ItemSwap.detectIntervalMs, ItemSwap_DetectTick)  -- reschedule first: belt-and-braces alongside the pcall below
@@ -591,7 +681,8 @@ function ItemSwap_DetectTickBody()
     -- marker and avoids anything like the reference project's continuous
     -- 50Hz stream that originally motivated keeping this mod's console/log
     -- output minimal.
-    System.LogAlways(string.format("[ITEMSWAP-EVT] pos %.3f %.3f %.3f", pos.x, pos.y, pos.z))
+    local crouching = ItemSwap_IsLocalPlayerCrouching()
+    System.LogAlways(string.format("[ITEMSWAP-EVT] pos %.3f %.3f %.3f %d", pos.x, pos.y, pos.z, crouching and 1 or 0))
 
     local newCounts = ItemSwap_InventoryCounts()
 

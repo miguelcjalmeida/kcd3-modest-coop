@@ -57,8 +57,12 @@ public sealed record ItemClaimResolvedMessage(uint DropId, byte WinnerPlayerId);
 /// same physical location in everyone's game. That's what makes a presence
 /// marker meaningful at all: it can legitimately be far from the receiving
 /// player, same as a real friend would be if you could see them on the map.
+///
+/// IsCrouching drives Milestone 3's marker crouch behavior (a lowered
+/// height and a paused idle animation) - see itemswap.lua's
+/// ItemSwap_OnPeerPosition.
 /// </summary>
-public sealed record PositionUpdateMessage(byte PlayerId, float X, float Y, float Z);
+public sealed record PositionUpdateMessage(byte PlayerId, float X, float Y, float Z, bool IsCrouching);
 
 public static class Protocol
 {
@@ -225,12 +229,13 @@ public static class Protocol
 
     public static byte[] Encode(PositionUpdateMessage m)
     {
-        var payload = new byte[13];
+        var payload = new byte[14];
         var span = payload.AsSpan();
         span[0] = m.PlayerId;
         BitConverter.TryWriteBytes(span[1..5], m.X);
         BitConverter.TryWriteBytes(span[5..9], m.Y);
         BitConverter.TryWriteBytes(span[9..13], m.Z);
+        span[13] = (byte)(m.IsCrouching ? 1 : 0);
         return EncodeFrame(MessageType.PositionUpdate, payload);
     }
 
@@ -241,6 +246,7 @@ public static class Protocol
             PlayerId: span[0],
             X: BitConverter.ToSingle(span[1..5]),
             Y: BitConverter.ToSingle(span[5..9]),
-            Z: BitConverter.ToSingle(span[9..13]));
+            Z: BitConverter.ToSingle(span[9..13]),
+            IsCrouching: span[13] != 0);
     }
 }
