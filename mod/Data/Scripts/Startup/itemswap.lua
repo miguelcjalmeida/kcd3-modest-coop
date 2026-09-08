@@ -241,7 +241,7 @@ ItemSwap.labelSize = 6.0
 ItemSwap.peerCrouching = {}        -- key -> bool, latest known crouch state
 ItemSwap.peerAnimPauseUntil = {}   -- key -> os.clock() timestamp; bob suppressed while os.clock() < this (math.huge while actively crouching)
 ItemSwap.peerHeightTransition = {} -- key -> {startClock, fromOffset, toOffset}, or nil once finished
-ItemSwap.crouchHeightReduction = 0.5   -- meters the marker sits lower while crouched
+ItemSwap.crouchHeightReduction = 0.8   -- meters the marker sits lower while crouched
 ItemSwap.crouchTransitionSec = 0.35    -- seconds to ease to the new height when crouch state changes
 ItemSwap.crouchAnimCooldownSec = 10    -- seconds after standing back up before the bob resumes
 
