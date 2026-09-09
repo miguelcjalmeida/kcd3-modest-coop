@@ -1273,14 +1273,37 @@ System.AddCCommand("itemswap_detect_off", "ItemSwap_DetectOff()",
 -- Single entry point for everything the mod needs armed each session - the
 -- agent's own auto-arm (on seeing ITEMSWAP-LOADED) is unreliable in
 -- practice (RC isn't always up yet at that exact moment), so this exists
--- as a one-command manual fallback: type it once and both the drop
--- detector and the marker animation are running. For now it's just the
--- two calls below; anything else the mod needs started each session
--- belongs here too.
+-- as a one-command manual fallback: type it once and everything the mod
+-- needs is running.
+--
+-- Off-then-wait-then-on, not just straight to On: the user's own report was
+-- that position broadcasting sometimes silently stops for their friends
+-- over a long session, and the existing fix has always been running
+-- itemswap_*_off then itemswap_*_on by hand. Going straight to On alone
+-- assumes each loop's Running flag is false already - but if a previous
+-- Script.SetTimer chain died silently (the same "uncaught error kills the
+-- whole chain with nothing logged" failure mode already documented for
+-- ItemSwap_DetectTick) while its Running flag stayed stuck true from
+-- before, On() would see that flag, no-op, and leave the mod dark with no
+-- indication why. Off() unconditionally clears the flag first regardless
+-- of whatever state it was actually in, so On() is guaranteed to actually
+-- schedule a fresh Script.SetTimer chain rather than trusting stale state.
+-- The 1.5s gap is just so a chain from the previous SetTimer generation
+-- has time to naturally stop rescheduling itself before a new one starts,
+-- rather than two overlapping generations both alive briefly.
 function ItemSwap_Start()
+    ItemSwap_DetectOff()
+    ItemSwap_AnimOff()
+    ItemSwap_CooldownDisplayOff()
+    System.LogAlways("[ITEMSWAP] itemswap_start: stopped everything, rearming in 1.5s")
+    Script.SetTimer(1500, ItemSwap_StartOnPart)
+end
+
+function ItemSwap_StartOnPart()
     ItemSwap_DetectOn()
     ItemSwap_AnimOn()
     ItemSwap_CooldownDisplayOn()
+    System.LogAlways("[ITEMSWAP] itemswap_start: rearmed")
 end
 
 System.AddCCommand("itemswap_start", "ItemSwap_Start()",

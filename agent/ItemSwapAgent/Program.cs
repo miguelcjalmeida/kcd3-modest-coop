@@ -155,6 +155,56 @@ logTail.LineRead += async line =>
         return;
     }
 
+    if (line.Contains("Loading saved game", StringComparison.Ordinal))
+    {
+        // A native engine line (not one this mod emits), confirmed live by
+        // the user: dying and auto-reloading the last save does NOT print
+        // ITEMSWAP-LOADED (the whole Startup script does not re-execute -
+        // this is a lighter-weight reload than a real level/script load),
+        // yet the position broadcast silently stopped forever right at
+        // this exact line in their log. The mod's own Lua state survives
+        // that reload, but its Script.SetTimer chains apparently don't -
+        // detectRunning/animRunning/etc. stay stuck true from before,
+        // pointing at chains that are actually dead, which is exactly what
+        // itemswap_start's own off-then-wait-then-on sequence is for: Off()
+        // unconditionally clears each flag regardless of its stale value,
+        // so On() is guaranteed to schedule a genuinely fresh chain rather
+        // than trusting state left over from before the reload.
+        //
+        // Deliberately "Loading saved game" without "last": confirmed live
+        // that manually loading a DIFFERENT specific save from the main
+        // menu prints only this line, with no "Loading last saved game"
+        // prefix at all - matching on "last" would miss that case entirely.
+        // No risk of double-firing alongside the ITEMSWAP-LOADED branch
+        // above either: confirmed live that line appears during mod init,
+        // well before any save-loading line, at a completely different
+        // point in the log.
+        Console.WriteLine("[agent] detected a save load - rearming the mod " +
+            "(if this fails, type 'itemswap_start' in the game's console)");
+        try { await rc.SendCommandAsync("itemswap_start"); }
+        catch (Exception ex) { Console.WriteLine($"[agent] failed to auto-arm after reload: {ex.Message}"); }
+        return;
+    }
+
+    const string armCheckTag = "[ITEMSWAP-ARMCHECK]";
+    var armCheckIndex = line.IndexOf(armCheckTag, StringComparison.Ordinal);
+    if (armCheckIndex >= 0)
+    {
+        // Answer to the watchdog's periodic question below - deliberately
+        // answered via the log-tail channel, not a direct RC response
+        // (console-command output never comes back over RC itself, only
+        // to kcd.log - the same constraint every other outbound signal in
+        // this mod already works around).
+        var armed = line[(armCheckIndex + armCheckTag.Length)..].Trim();
+        if (!string.Equals(armed, "true", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine("[agent] watchdog: mod not armed - rearming");
+            try { await rc.SendCommandAsync("itemswap_start"); }
+            catch (Exception ex) { Console.WriteLine($"[agent] watchdog rearm failed: {ex.Message}"); }
+        }
+        return;
+    }
+
     const string tag = "[ITEMSWAP-EVT]";
     var tagIndex = line.IndexOf(tag, StringComparison.Ordinal);
     if (tagIndex < 0) return;
@@ -227,10 +277,38 @@ logTail.LineRead += async line =>
 };
 logTail.Start();
 
-Console.WriteLine("[agent] Running. Press Ctrl+C to exit.");
-
 var shutdown = new TaskCompletionSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; shutdown.TrySetResult(); };
+
+// Guaranteed backstop, independent of every specific "something might have
+// gone wrong" trigger above (death-reload, loading a save, the boot-time
+// auto-arm losing its race with RC starting up) - confirmed live that the
+// boot-time race is real, not just theoretical. Runs unconditionally every
+// 10s regardless of whether the mod already looks armed; asking is cheap,
+// and re-running itemswap_start when it's already armed is a harmless
+// no-op (each *_On() function already guards against double-arming).
+// The answer arrives asynchronously via the ARMCHECK branch above, not a
+// direct response to this call - same reasoning as everything else here.
+_ = Task.Run(async () =>
+{
+    while (!shutdown.Task.IsCompleted)
+    {
+        try
+        {
+            await rc.SendLuaAsync(
+                "local ok, armed = pcall(function() return ItemSwap.detectRunning end) " +
+                "System.LogAlways('[ITEMSWAP-ARMCHECK] ' .. tostring(ok and armed == true))");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[agent] watchdog check failed: {ex.Message}");
+        }
+        await Task.Delay(TimeSpan.FromSeconds(10));
+    }
+});
+
+Console.WriteLine("[agent] Running. Press Ctrl+C to exit.");
+
 await shutdown.Task;
 
 await peerLink.DisposeAsync();
