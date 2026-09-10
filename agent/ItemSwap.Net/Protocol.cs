@@ -27,6 +27,7 @@ public enum MessageType : byte
     Heartbeat = 0x08,
     Disconnect = 0x09,
     PositionUpdate = 0x0A,
+    WeatherUpdate = 0x0B,
 }
 
 public sealed record HelloMessage(byte ProtocolVersion, string Name, byte[] SecretHash);
@@ -48,6 +49,20 @@ public sealed record ItemDropMessage(
 
 public sealed record ItemClaimMessage(uint DropId, byte FromPlayerId);
 public sealed record ItemClaimResolvedMessage(uint DropId, byte WinnerPlayerId);
+
+/// <summary>
+/// Host-only, one-directional: only the host ever sends this (PeerLink
+/// silently no-ops if a joiner calls NotifyWeatherAsync). There's no
+/// per-player weather - each player runs a fully independent single-player
+/// save with its own dynamic weather simulation, so the host is the sole
+/// source of truth and joiners force-match it. RainIntensity is the only
+/// real weather value the game exposes a getter for
+/// (EnvironmentModule.GetRainIntensity(), 0-1) - confirmed live, and
+/// confirmed via the game's own source that no fog/cloud/preset reader
+/// exists anywhere. A receiving joiner applies it via
+/// `wh_env_RainIntensityOverride = RainIntensity` + RebuildClouds().
+/// </summary>
+public sealed record WeatherUpdateMessage(float RainIntensity);
 
 /// <summary>
 /// Unlike ItemDropMessage's X/Y/Z, these coordinates ARE meant to be used
@@ -365,4 +380,14 @@ public static class Protocol
             InOutOfBreath: span.Length > 43 && span[43] != 0,
             InLockpicking: span.Length > 44 && span[44] != 0);
     }
+
+    public static byte[] Encode(WeatherUpdateMessage m)
+    {
+        var payload = new byte[4];
+        BitConverter.TryWriteBytes(payload.AsSpan(), m.RainIntensity);
+        return EncodeFrame(MessageType.WeatherUpdate, payload);
+    }
+
+    public static WeatherUpdateMessage DecodeWeatherUpdate(byte[] payload) =>
+        new(BitConverter.ToSingle(payload.AsSpan(0, 4)));
 }

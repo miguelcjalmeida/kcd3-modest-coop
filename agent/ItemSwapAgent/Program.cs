@@ -45,6 +45,14 @@ await using var rc = new RemoteConsoleClient(config.RemoteConsoleHost, config.Re
 // a bare player id - PositionUpdateMessage itself only carries id+coords.
 var playerNames = new Dictionary<byte, string>();
 
+// Host-only: the last rain intensity actually broadcast, so a real change
+// (not float noise or a duplicate reading) is what triggers a WeatherUpdate -
+// this mod's Lua side already reads its own rain at most once every
+// extraStateIntervalSec, but that value rides along on every 250ms "pos"
+// line regardless, so this is what keeps the network side from re-sending
+// the identical value 8x for nothing.
+float? lastBroadcastRain = null;
+
 peerLink.PlayerJoined += (id, name) =>
 {
     playerNames[id] = name;
@@ -124,6 +132,17 @@ peerLink.PositionUpdateReceived += async msg =>
     {
         Console.WriteLine($"[agent] failed to update presence marker for player {msg.PlayerId}: {ex.Message}");
     }
+};
+
+peerLink.WeatherUpdateReceived += async msg =>
+{
+    // Only a joiner ever receives this - NotifyWeatherAsync no-ops for the
+    // host, so the host's own game never gets its natural weather
+    // overridden by itself.
+    var rain = msg.RainIntensity.ToString(CultureInfo.InvariantCulture);
+    Console.WriteLine($"[agent] host weather update: rainIntensity={rain}");
+    try { await rc.SendLuaAsync($"ItemSwap_OnPeerWeather({rain})"); }
+    catch (Exception ex) { Console.WriteLine($"[agent] failed to apply weather update: {ex.Message}"); }
 };
 
 peerLink.ItemClaimResolved += async msg =>
@@ -260,7 +279,9 @@ logTail.LineRead += async line =>
             // <inSmithing>/<isSitting>/<isLaying>/<inHungry>/<inExhausted>/
             // <inOutOfBreath>/<inLockpicking> are "1"/"0"; each trailing field
             // is optional and defaults to "off" rather than failing the whole
-            // match, so an older mod build missing the newer fields still works.
+            // match, so an older mod build missing the newer fields still
+            // works. The final field, <rainIntensity>, is a float (0-1) -
+            // the only real weather value the game exposes a reader for.
             // No console line here either, same reasoning as the receive side.
             case "pos" when parts.Length >= 4
                 && float.TryParse(parts[1], CultureInfo.InvariantCulture, out var px)
@@ -293,6 +314,21 @@ logTail.LineRead += async line =>
                 var pInOutOfBreath = parts.Length >= 29 && parts[28] == "1";
                 var pInLockpicking = parts.Length >= 30 && parts[29] == "1";
                 await peerLink.NotifyLocalPositionAsync(px, py, pz, pCrouching, pCurHp, pMaxHp, pInCombat, pInDanger, pInTense, pInDialog, pInRiding, pInPickpocketing, pInUnconscious, pInDead, pInWanted, pInArmed, pInCarryingCorpse, pInGambling, pInAlchemy, pInSharpening, pInReading, pInTranscribing, pInSmithing, pIsSitting, pIsLaying, pInHungry, pInExhausted, pInOutOfBreath, pInLockpicking);
+
+                // Milestone 9: weather sync, host-only. NotifyWeatherAsync
+                // itself already no-ops for a joiner, but the change-detection
+                // here is what stops the host from re-broadcasting the same
+                // reading on every single "pos" line before Lua's own
+                // extraStateIntervalSec throttle produces a new one.
+                if (config.Role == "host"
+                    && parts.Length >= 31
+                    && float.TryParse(parts[30], CultureInfo.InvariantCulture, out var rain)
+                    && (lastBroadcastRain is null || Math.Abs(lastBroadcastRain.Value - rain) >= 0.02f))
+                {
+                    lastBroadcastRain = rain;
+                    try { await peerLink.NotifyWeatherAsync(rain); }
+                    catch (Exception ex) { Console.WriteLine($"[agent] failed to broadcast weather: {ex.Message}"); }
+                }
                 break;
         }
     }

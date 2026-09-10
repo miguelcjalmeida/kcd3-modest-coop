@@ -12,24 +12,40 @@ Console.WriteLine($"[peer] SyntheticPeer v{Assembly.GetExecutingAssembly().GetCu
 
 if (args.Length < 3)
 {
-    Console.WriteLine("Usage: SyntheticPeer <hostAddr:port> <name> <sharedSecret>");
+    Console.WriteLine("Usage: SyntheticPeer <hostAddr:port> <name> <sharedSecret>   (join mode)");
+    Console.WriteLine("       SyntheticPeer host <port> <name> <sharedSecret>       (host mode - real agents connect to this)");
     Console.WriteLine("Then type commands:");
     Console.WriteLine("  drop <itemClassGuid> <amount> <health> [x] [y] [z]   - simulate this fake player dropping an item (position optional)");
     Console.WriteLine("  claim <dropId>                            - simulate this fake player picking up a tracked drop");
     Console.WriteLine("  pos <x> <y> <z> [crouching] [curHp] [maxHp] [inCombat] [inDanger] [inTense] [inDialog] [inRiding] [inPickpocketing] [inUnconscious] [inDead] [inWanted] [inArmed] [inCarryingCorpse] [inGambling] [inAlchemy] [inSharpening] [inReading] [inTranscribing] [inSmithing] [isSitting] [isLaying] [inHungry] [inExhausted] [inOutOfBreath] [inLockpicking]  - simulate this fake player's position (bool fields: 1/true; HP optional, defaults to unknown)");
+    Console.WriteLine("  weather <rainIntensity>                   - host mode only: push a weather change to everyone connected (0-1)");
     Console.WriteLine("  quit");
     return 1;
 }
 
-var idx = args[0].LastIndexOf(':');
-var hostAddr = args[0][..idx];
-var hostPort = int.Parse(args[0][(idx + 1)..]);
-var name = args[1];
-var secret = args[2];
-
-Console.WriteLine($"[peer] connecting to {hostAddr}:{hostPort} as '{name}' ...");
-await using var link = await PeerLink.JoinAsync(hostAddr, hostPort, name, secret);
-Console.WriteLine($"[peer] connected, assigned player id {link.LocalPlayerId}");
+PeerLink link;
+string name;
+if (args[0].Equals("host", StringComparison.OrdinalIgnoreCase))
+{
+    var hostPort = int.Parse(args[1]);
+    name = args[2];
+    var secret = args[3];
+    Console.WriteLine($"[peer] hosting on port {hostPort} as '{name}' ...");
+    link = await PeerLink.StartHostAsync(hostPort, name, secret);
+    Console.WriteLine($"[peer] hosting, player id {link.LocalPlayerId}");
+}
+else
+{
+    var idx = args[0].LastIndexOf(':');
+    var hostAddr = args[0][..idx];
+    var hostPort = int.Parse(args[0][(idx + 1)..]);
+    name = args[1];
+    var secret = args[2];
+    Console.WriteLine($"[peer] connecting to {hostAddr}:{hostPort} as '{name}' ...");
+    link = await PeerLink.JoinAsync(hostAddr, hostPort, name, secret);
+    Console.WriteLine($"[peer] connected, assigned player id {link.LocalPlayerId}");
+}
+await using var _ = link;
 
 link.PlayerJoined += (id, n) => Console.WriteLine($"[peer] player joined: id={id} name={n}");
 link.PlayerLeft += id => Console.WriteLine($"[peer] player left: id={id}");
@@ -39,6 +55,8 @@ link.ItemClaimResolved += m => Console.WriteLine(
     $"[peer] claim resolved: dropId={m.DropId} winner={m.WinnerPlayerId} (mine={m.WinnerPlayerId == link.LocalPlayerId})");
 link.PositionUpdateReceived += m => Console.WriteLine(
     $"[peer] position update: playerId={m.PlayerId} pos={m.X:F2},{m.Y:F2},{m.Z:F2}");
+link.WeatherUpdateReceived += m => Console.WriteLine(
+    $"[peer] weather update: rainIntensity={m.RainIntensity:F3}");
 
 Console.WriteLine("[peer] ready. Commands: drop <classGuid> <amount> <health> | claim <dropId> | quit");
 while (true)
@@ -115,6 +133,14 @@ while (true)
             var inLockpicking = parts.Length >= 30 && (parts[29] == "1" || parts[29].Equals("true", StringComparison.OrdinalIgnoreCase));
             await link.NotifyLocalPositionAsync(x, y, z, crouching, curHp, maxHp, inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing, inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse, inGambling, inAlchemy, inSharpening, inReading, inTranscribing, inSmithing, isSitting, isLaying, inHungry, inExhausted, inOutOfBreath, inLockpicking);
             Console.WriteLine($"[peer] sent position {x},{y},{z} crouching={crouching} hp={curHp}/{maxHp} inCombat={inCombat} inDanger={inDanger} inTense={inTense} inDialog={inDialog} inRiding={inRiding} inPickpocketing={inPickpocketing} inUnconscious={inUnconscious} inDead={inDead} inWanted={inWanted} inArmed={inArmed} inCarryingCorpse={inCarryingCorpse} inGambling={inGambling} inAlchemy={inAlchemy} inSharpening={inSharpening} inReading={inReading} inTranscribing={inTranscribing} inSmithing={inSmithing} isSitting={isSitting} isLaying={isLaying} inHungry={inHungry} inExhausted={inExhausted} inOutOfBreath={inOutOfBreath} inLockpicking={inLockpicking}");
+        }
+        else if (parts[0] == "weather" && parts.Length >= 2)
+        {
+            var rain = float.Parse(parts[1], CultureInfo.InvariantCulture);
+            await link.NotifyWeatherAsync(rain);
+            Console.WriteLine(link.IsHost
+                ? $"[peer] broadcast weather rainIntensity={rain}"
+                : "[peer] not the host - weather command had no effect");
         }
         else
         {

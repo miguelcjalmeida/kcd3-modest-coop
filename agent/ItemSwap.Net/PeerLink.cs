@@ -58,6 +58,8 @@ public sealed class PeerLink : IAsyncDisposable
     public event Action<ItemClaimResolvedMessage>? ItemClaimResolved;
     /// <summary>A peer's position update arrived - the local game should move/create their presence marker.</summary>
     public event Action<PositionUpdateMessage>? PositionUpdateReceived;
+    /// <summary>The host's weather changed - a joiner's local game should force-match it.</summary>
+    public event Action<WeatherUpdateMessage>? WeatherUpdateReceived;
 
     private sealed class ConnectedPeer
     {
@@ -304,6 +306,9 @@ public sealed class PeerLink : IAsyncDisposable
                     case MessageType.PositionUpdate:
                         PositionUpdateReceived?.Invoke(Protocol.DecodePositionUpdate(frame.Value.Payload));
                         break;
+                    case MessageType.WeatherUpdate:
+                        WeatherUpdateReceived?.Invoke(Protocol.DecodeWeatherUpdate(frame.Value.Payload));
+                        break;
                     case MessageType.Heartbeat:
                         break;
                     case MessageType.Disconnect:
@@ -342,6 +347,18 @@ public sealed class PeerLink : IAsyncDisposable
             await BroadcastAsync(Protocol.Encode(msg)).ConfigureAwait(false);
         else
             await SendAsync(_hostConnection!, Protocol.Encode(msg)).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Host-only: call periodically with the host's own current rain
+    /// intensity so joiners can force-match it. No-ops for a joiner - there
+    /// is exactly one weather source of truth per session, the host, and a
+    /// joiner has nothing meaningful to broadcast here.
+    /// </summary>
+    public async Task NotifyWeatherAsync(float rainIntensity)
+    {
+        if (!_isHost) return;
+        await BroadcastAsync(Protocol.Encode(new WeatherUpdateMessage(rainIntensity))).ConfigureAwait(false);
     }
 
     /// <summary>Call when THIS player physically picks up a tracked drop (local or a peer's).</summary>

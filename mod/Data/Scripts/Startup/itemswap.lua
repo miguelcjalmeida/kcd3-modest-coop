@@ -480,6 +480,36 @@ function ItemSwap_OnPeerLeft(playerId)
     if labelEnt then pcall(function() System.RemoveEntity(labelEnt.id) end) end
 end
 
+-- Milestone 9: weather sync. Called by the agent, host-only, whenever the
+-- host's rain intensity changes meaningfully:
+--   #ItemSwap_OnPeerWeather(<rainIntensity>)
+-- Force-applies it locally via the same wh_env_RainIntensityOverride +
+-- RebuildClouds() trick confirmed live earlier - the only real weather
+-- lever the game exposes (no fog/cloud/preset control exists, confirmed
+-- via the game's own source). This never fires on the host's own game
+-- (PeerLink.NotifyWeatherAsync no-ops for the sender), only on joiners.
+ItemSwap.lastAppliedRain = nil
+
+function ItemSwap_OnPeerWeather(rainIntensity)
+    local ok, err = pcall(ItemSwap_OnPeerWeatherBody, rainIntensity)
+    if not ok then
+        System.LogAlways("[ITEMSWAP-ERR] OnPeerWeather threw: " .. tostring(err))
+    end
+end
+
+function ItemSwap_OnPeerWeatherBody(rainIntensity)
+    rainIntensity = tonumber(rainIntensity)
+    if not rainIntensity then return end
+    -- Skip the RebuildClouds() cost for a no-op-sized change (float noise,
+    -- or a duplicate resend) - only a real change is worth paying for.
+    if ItemSwap.lastAppliedRain and math.abs(ItemSwap.lastAppliedRain - rainIntensity) < 0.02 then
+        return
+    end
+    ItemSwap.lastAppliedRain = rainIntensity
+    System.ExecuteCommand("wh_env_RainIntensityOverride = " .. string.format("%.3f", rainIntensity))
+    EnvironmentModule.RebuildClouds()
+end
+
 -- ===== Milestone 3: marker idle animation =====
 -- A gentle, continuous up/down bob on every peer marker+label, independent
 -- of position updates: this loop is the ONLY thing that ever calls
@@ -1423,7 +1453,7 @@ ItemSwap.outOfBreathThreshold = 20
 
 function ItemSwap_GetLocalExtraState()
     if not player or not player.soul or not player.player then
-        return false, false, false, false, false, false, false, false, false, false, false, false
+        return false, false, false, false, false, false, false, false, false, false, false, false, 0
     end
 
     local gambling, alchemy, sharpening, reading, transcribing, smithing, lockpicking = false, false, false, false, false, false, false
@@ -1456,8 +1486,16 @@ function ItemSwap_GetLocalExtraState()
     local exhausted = ok4 and type(exhaust) == "number" and exhaust < ItemSwap.exhaustedThreshold
     local outOfBreath = ok5 and type(stamina) == "number" and stamina < ItemSwap.outOfBreathThreshold
 
+    -- The only real weather value the game exposes a getter for at all -
+    -- confirmed live, and confirmed via the game's own source that no
+    -- fog/cloud/preset reader exists anywhere (EnvironmentModule has just
+    -- 6 methods total). Milestone 9: broadcast host-only, so peers can
+    -- force-match the host's weather via wh_env_RainIntensityOverride.
+    local ok6, rain = pcall(function() return EnvironmentModule.GetRainIntensity() end)
+    local rainIntensity = (ok6 and type(rain) == "number") and rain or 0
+
     return gambling, alchemy, sharpening, reading, transcribing, smithing,
-        (ok1 and sitting == true), (ok2 and laying == true), hungry, exhausted, outOfBreath, lockpicking
+        (ok1 and sitting == true), (ok2 and laying == true), hungry, exhausted, outOfBreath, lockpicking, rainIntensity
 end
 
 -- ItemSwap_GetLocalExtraState's minigame check does a real
@@ -1471,17 +1509,17 @@ end
 -- only on every ~4th one at the default intervals.
 ItemSwap.extraStateIntervalSec = 2.0
 ItemSwap.lastExtraStateCheck = 0
-ItemSwap.cachedExtraState = { false, false, false, false, false, false, false, false, false, false, false, false }
+ItemSwap.cachedExtraState = { false, false, false, false, false, false, false, false, false, false, false, false, 0 }
 
 function ItemSwap_GetLocalExtraStateThrottled()
     local now = os.clock()
     if now - ItemSwap.lastExtraStateCheck >= ItemSwap.extraStateIntervalSec then
         ItemSwap.lastExtraStateCheck = now
-        local a, b, c, d, e, f, g, h, i, j, k, l = ItemSwap_GetLocalExtraState()
-        ItemSwap.cachedExtraState = { a, b, c, d, e, f, g, h, i, j, k, l }
+        local a, b, c, d, e, f, g, h, i, j, k, l, m = ItemSwap_GetLocalExtraState()
+        ItemSwap.cachedExtraState = { a, b, c, d, e, f, g, h, i, j, k, l, m }
     end
     local s = ItemSwap.cachedExtraState
-    return s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9], s[10], s[11], s[12]
+    return s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9], s[10], s[11], s[12], s[13]
 end
 
 function ItemSwap_DetectTick()
@@ -1559,13 +1597,14 @@ function ItemSwap_DetectTickBody()
     local inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing,
         inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse = ItemSwap_GetLocalCombatState()
     local inGambling, inAlchemy, inSharpening, inReading, inTranscribing, inSmithing,
-        isSitting, isLaying, inHungry, inExhausted, inOutOfBreath, inLockpicking = ItemSwap_GetLocalExtraStateThrottled()
-    System.LogAlways(string.format("[ITEMSWAP-EVT] pos %.3f %.3f %.3f %d %.1f %.1f %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
+        isSitting, isLaying, inHungry, inExhausted, inOutOfBreath, inLockpicking, rainIntensity = ItemSwap_GetLocalExtraStateThrottled()
+    System.LogAlways(string.format("[ITEMSWAP-EVT] pos %.3f %.3f %.3f %d %.1f %.1f %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %.3f",
         pos.x, pos.y, pos.z, crouching and 1 or 0, curHp, maxHp, inCombat and 1 or 0, inDanger and 1 or 0, inTense and 1 or 0, inDialog and 1 or 0,
         inRiding and 1 or 0, inPickpocketing and 1 or 0,
         inUnconscious and 1 or 0, inDead and 1 or 0, inWanted and 1 or 0, inArmed and 1 or 0, inCarryingCorpse and 1 or 0,
         inGambling and 1 or 0, inAlchemy and 1 or 0, inSharpening and 1 or 0, inReading and 1 or 0, inTranscribing and 1 or 0, inSmithing and 1 or 0,
-        isSitting and 1 or 0, isLaying and 1 or 0, inHungry and 1 or 0, inExhausted and 1 or 0, inOutOfBreath and 1 or 0, inLockpicking and 1 or 0))
+        isSitting and 1 or 0, isLaying and 1 or 0, inHungry and 1 or 0, inExhausted and 1 or 0, inOutOfBreath and 1 or 0, inLockpicking and 1 or 0,
+        rainIntensity))
 
     -- Deliberately local-only: never logged/broadcast, so peers never see
     -- this - the F2 panel just reads these cached fields directly on its
