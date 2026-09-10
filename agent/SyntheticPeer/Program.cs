@@ -16,7 +16,7 @@ if (args.Length < 3)
     Console.WriteLine("Then type commands:");
     Console.WriteLine("  drop <itemClassGuid> <amount> <health> [x] [y] [z]   - simulate this fake player dropping an item (position optional)");
     Console.WriteLine("  claim <dropId>                            - simulate this fake player picking up a tracked drop");
-    Console.WriteLine("  pos <x> <y> <z> [crouching] [curHp] [maxHp] [inCombat] [inDanger] [inTense] [inDialog] [inRiding] [inPickpocketing] [inUnconscious] [inDead] [inWanted] [inArmed] [inCarryingCorpse] [inGambling] [inAlchemy] [inSharpening] [inReading] [inTranscribing] [inSmithing] [isSitting] [isLaying] [inHungry] [inExhausted] [inOutOfBreath]  - simulate this fake player's position (bool fields: 1/true; HP optional, defaults to unknown)");
+    Console.WriteLine("  pos <x> <y> <z> [crouching] [curHp] [maxHp] [inCombat] [inDanger] [inTense] [inDialog] [inRiding] [inPickpocketing] [inUnconscious] [inDead] [inWanted] [inArmed] [inCarryingCorpse] [inGambling] [inAlchemy] [inSharpening] [inReading] [inTranscribing] [inSmithing] [isSitting] [isLaying] [inHungry] [inExhausted] [inOutOfBreath] [inLockpicking]  - simulate this fake player's position (bool fields: 1/true; HP optional, defaults to unknown)");
     Console.WriteLine("  quit");
     return 1;
 }
@@ -112,8 +112,9 @@ while (true)
             var inHungry = parts.Length >= 27 && (parts[26] == "1" || parts[26].Equals("true", StringComparison.OrdinalIgnoreCase));
             var inExhausted = parts.Length >= 28 && (parts[27] == "1" || parts[27].Equals("true", StringComparison.OrdinalIgnoreCase));
             var inOutOfBreath = parts.Length >= 29 && (parts[28] == "1" || parts[28].Equals("true", StringComparison.OrdinalIgnoreCase));
-            await link.NotifyLocalPositionAsync(x, y, z, crouching, curHp, maxHp, inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing, inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse, inGambling, inAlchemy, inSharpening, inReading, inTranscribing, inSmithing, isSitting, isLaying, inHungry, inExhausted, inOutOfBreath);
-            Console.WriteLine($"[peer] sent position {x},{y},{z} crouching={crouching} hp={curHp}/{maxHp} inCombat={inCombat} inDanger={inDanger} inTense={inTense} inDialog={inDialog} inRiding={inRiding} inPickpocketing={inPickpocketing} inUnconscious={inUnconscious} inDead={inDead} inWanted={inWanted} inArmed={inArmed} inCarryingCorpse={inCarryingCorpse} inGambling={inGambling} inAlchemy={inAlchemy} inSharpening={inSharpening} inReading={inReading} inTranscribing={inTranscribing} inSmithing={inSmithing} isSitting={isSitting} isLaying={isLaying} inHungry={inHungry} inExhausted={inExhausted} inOutOfBreath={inOutOfBreath}");
+            var inLockpicking = parts.Length >= 30 && (parts[29] == "1" || parts[29].Equals("true", StringComparison.OrdinalIgnoreCase));
+            await link.NotifyLocalPositionAsync(x, y, z, crouching, curHp, maxHp, inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing, inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse, inGambling, inAlchemy, inSharpening, inReading, inTranscribing, inSmithing, isSitting, isLaying, inHungry, inExhausted, inOutOfBreath, inLockpicking);
+            Console.WriteLine($"[peer] sent position {x},{y},{z} crouching={crouching} hp={curHp}/{maxHp} inCombat={inCombat} inDanger={inDanger} inTense={inTense} inDialog={inDialog} inRiding={inRiding} inPickpocketing={inPickpocketing} inUnconscious={inUnconscious} inDead={inDead} inWanted={inWanted} inArmed={inArmed} inCarryingCorpse={inCarryingCorpse} inGambling={inGambling} inAlchemy={inAlchemy} inSharpening={inSharpening} inReading={inReading} inTranscribing={inTranscribing} inSmithing={inSmithing} isSitting={isSitting} isLaying={isLaying} inHungry={inHungry} inExhausted={inExhausted} inOutOfBreath={inOutOfBreath} inLockpicking={inLockpicking}");
         }
         else
         {

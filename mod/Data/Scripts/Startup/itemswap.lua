@@ -278,6 +278,7 @@ ItemSwap.peerLaying = {}       -- key -> bool, latest reported player.player:IsL
 ItemSwap.peerHungry = {}       -- key -> bool, hunger state below threshold
 ItemSwap.peerExhausted = {}    -- key -> bool, exhaust state below threshold
 ItemSwap.peerOutOfBreath = {}  -- key -> bool, stamina below threshold
+ItemSwap.peerLockpicking = {}  -- key -> bool, using a locked AnimDoor/Stash (nUserId == rawId)
 
 System.SetCVar('cl_comment', 1)  -- required once: Comment entities no-op their per-frame draw otherwise
 
@@ -304,7 +305,7 @@ end
 
 -- Called by the agent (one-shot '#'-eval is fine, no timer involved) on
 -- every position update relayed from a peer:
---   #ItemSwap_OnPeerPosition(<playerId>, <x>, <y>, <z>, "<name>", <isCrouching>, <curHp>, <maxHp>, <inCombat>, <inDanger>, <inTense>, <inDialog>, <inRiding>, <inPickpocketing>, <inUnconscious>, <inDead>, <inWanted>, <inArmed>, <inCarryingCorpse>, <inGambling>, <inAlchemy>, <inSharpening>, <inReading>, <inTranscribing>, <inSmithing>, <isSitting>, <isLaying>, <inHungry>, <inExhausted>, <inOutOfBreath>)
+--   #ItemSwap_OnPeerPosition(<playerId>, <x>, <y>, <z>, "<name>", <isCrouching>, <curHp>, <maxHp>, <inCombat>, <inDanger>, <inTense>, <inDialog>, <inRiding>, <inPickpocketing>, <inUnconscious>, <inDead>, <inWanted>, <inArmed>, <inCarryingCorpse>, <inGambling>, <inAlchemy>, <inSharpening>, <inReading>, <inTranscribing>, <inSmithing>, <isSitting>, <isLaying>, <inHungry>, <inExhausted>, <inOutOfBreath>, <inLockpicking>)
 -- Moves the existing marker+label if they exist for this player, or creates them.
 --
 -- Entirely wrapped in pcall: this runs as a raw one-shot RC eval with no
@@ -313,14 +314,14 @@ end
 -- otherwise surface only as a raw Lua error the player has no reason to
 -- notice, silently leaving their marker missing or stuck with no
 -- indication why. Logs [ITEMSWAP-ERR] instead.
-function ItemSwap_OnPeerPosition(playerId, x, y, z, name, isCrouching, curHp, maxHp, inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing, inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse, inGambling, inAlchemy, inSharpening, inReading, inTranscribing, inSmithing, isSitting, isLaying, inHungry, inExhausted, inOutOfBreath)
-    local ok, err = pcall(ItemSwap_OnPeerPositionBody, playerId, x, y, z, name, isCrouching, curHp, maxHp, inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing, inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse, inGambling, inAlchemy, inSharpening, inReading, inTranscribing, inSmithing, isSitting, isLaying, inHungry, inExhausted, inOutOfBreath)
+function ItemSwap_OnPeerPosition(playerId, x, y, z, name, isCrouching, curHp, maxHp, inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing, inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse, inGambling, inAlchemy, inSharpening, inReading, inTranscribing, inSmithing, isSitting, isLaying, inHungry, inExhausted, inOutOfBreath, inLockpicking)
+    local ok, err = pcall(ItemSwap_OnPeerPositionBody, playerId, x, y, z, name, isCrouching, curHp, maxHp, inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing, inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse, inGambling, inAlchemy, inSharpening, inReading, inTranscribing, inSmithing, isSitting, isLaying, inHungry, inExhausted, inOutOfBreath, inLockpicking)
     if not ok then
         System.LogAlways("[ITEMSWAP-ERR] OnPeerPosition threw for player " .. tostring(playerId) .. ": " .. tostring(err))
     end
 end
 
-function ItemSwap_OnPeerPositionBody(playerId, x, y, z, name, isCrouching, curHp, maxHp, inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing, inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse, inGambling, inAlchemy, inSharpening, inReading, inTranscribing, inSmithing, isSitting, isLaying, inHungry, inExhausted, inOutOfBreath)
+function ItemSwap_OnPeerPositionBody(playerId, x, y, z, name, isCrouching, curHp, maxHp, inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing, inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse, inGambling, inAlchemy, inSharpening, inReading, inTranscribing, inSmithing, isSitting, isLaying, inHungry, inExhausted, inOutOfBreath, inLockpicking)
     local key = tostring(playerId)
     local basePos = { x = tonumber(x), y = tonumber(y), z = tonumber(z) }
     if not basePos.x or not basePos.y or not basePos.z then return end
@@ -432,6 +433,7 @@ function ItemSwap_OnPeerPositionBody(playerId, x, y, z, name, isCrouching, curHp
     ItemSwap.peerHungry[key] = inHungry == true
     ItemSwap.peerExhausted[key] = inExhausted == true
     ItemSwap.peerOutOfBreath[key] = inOutOfBreath == true
+    ItemSwap.peerLockpicking[key] = inLockpicking == true
 end
 
 -- Called by the agent when a peer disconnects, so their marker doesn't sit
@@ -470,6 +472,7 @@ function ItemSwap_OnPeerLeft(playerId)
     ItemSwap.peerHungry[key] = nil
     ItemSwap.peerExhausted[key] = nil
     ItemSwap.peerOutOfBreath[key] = nil
+    ItemSwap.peerLockpicking[key] = nil
     if not rec then return end
     local markerEnt = System.GetEntityByName(rec.markerName)
     if markerEnt then pcall(function() System.RemoveEntity(markerEnt.id) end) end
@@ -746,7 +749,8 @@ function ItemSwap_PanelTickBody()
         local hungry = ItemSwap.peerHungry[key]
         local exhausted = ItemSwap.peerExhausted[key]
         local outOfBreath = ItemSwap.peerOutOfBreath[key]
-        local inMinigame = gambling or alchemy or sharpening or reading or transcribing or smithing
+        local lockpicking = ItemSwap.peerLockpicking[key]
+        local inMinigame = gambling or alchemy or sharpening or reading or transcribing or smithing or lockpicking
         local inNeed = hungry or exhausted or outOfBreath
         if combat or danger or caught or talking or riding or pickpocketing
             or unconscious or dead or wanted or armed or carryingCorpse
@@ -772,6 +776,7 @@ function ItemSwap_PanelTickBody()
             if reading then tags[#tags + 1] = "[Reading]" end
             if transcribing then tags[#tags + 1] = "[Transcribing]" end
             if smithing then tags[#tags + 1] = "[Smithing]" end
+            if lockpicking then tags[#tags + 1] = "[Lockpicking]" end
             if sitting then tags[#tags + 1] = "[Sitting]" end
             if laying then tags[#tags + 1] = "[Laying]" end
             -- Priority, most to least urgent: [Dead] (somber grey - already
@@ -1392,6 +1397,16 @@ ItemSwap.minigameClassTags = {
     RecipesBook = "reading",
     TranscriptionTable = "transcribing",
     Smithery = "smithing",
+    -- [Lockpicking]: locked doors and chests/stashes. Both confirmed live
+    -- to carry the same .nUserId field (AnimDoor.lua/AnimStash.lua's own
+    -- comments say so explicitly - "set from C_Minigame::Start and Stop" -
+    -- same native mechanism as every other minigame tag here). Note the
+    -- class name is "Stash", not "AnimStash" despite the filename - the
+    -- registered entity class matches the Lua table's own name
+    -- (AnimStash.lua defines a table literally called `Stash`), confirmed
+    -- live via a real scan (10 instances found, all named "Stash").
+    AnimDoor = "lockpicking",
+    Stash = "lockpicking",
 }
 ItemSwap.minigameScanRadius = 15  -- meters; these stations are fixed furniture, so "using one" always means being right next to it
 
@@ -1408,10 +1423,10 @@ ItemSwap.outOfBreathThreshold = 20
 
 function ItemSwap_GetLocalExtraState()
     if not player or not player.soul or not player.player then
-        return false, false, false, false, false, false, false, false, false, false, false
+        return false, false, false, false, false, false, false, false, false, false, false, false
     end
 
-    local gambling, alchemy, sharpening, reading, transcribing, smithing = false, false, false, false, false, false
+    local gambling, alchemy, sharpening, reading, transcribing, smithing, lockpicking = false, false, false, false, false, false, false
     pcall(function()
         local rid = player:GetRawId()
         local ppos = player:GetWorldPos()
@@ -1425,6 +1440,7 @@ function ItemSwap_GetLocalExtraState()
                 elseif tag == "reading" then reading = true
                 elseif tag == "transcribing" then transcribing = true
                 elseif tag == "smithing" then smithing = true
+                elseif tag == "lockpicking" then lockpicking = true
                 end
             end
         end
@@ -1441,7 +1457,7 @@ function ItemSwap_GetLocalExtraState()
     local outOfBreath = ok5 and type(stamina) == "number" and stamina < ItemSwap.outOfBreathThreshold
 
     return gambling, alchemy, sharpening, reading, transcribing, smithing,
-        (ok1 and sitting == true), (ok2 and laying == true), hungry, exhausted, outOfBreath
+        (ok1 and sitting == true), (ok2 and laying == true), hungry, exhausted, outOfBreath, lockpicking
 end
 
 function ItemSwap_DetectTick()
@@ -1519,13 +1535,13 @@ function ItemSwap_DetectTickBody()
     local inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing,
         inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse = ItemSwap_GetLocalCombatState()
     local inGambling, inAlchemy, inSharpening, inReading, inTranscribing, inSmithing,
-        isSitting, isLaying, inHungry, inExhausted, inOutOfBreath = ItemSwap_GetLocalExtraState()
-    System.LogAlways(string.format("[ITEMSWAP-EVT] pos %.3f %.3f %.3f %d %.1f %.1f %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
+        isSitting, isLaying, inHungry, inExhausted, inOutOfBreath, inLockpicking = ItemSwap_GetLocalExtraState()
+    System.LogAlways(string.format("[ITEMSWAP-EVT] pos %.3f %.3f %.3f %d %.1f %.1f %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
         pos.x, pos.y, pos.z, crouching and 1 or 0, curHp, maxHp, inCombat and 1 or 0, inDanger and 1 or 0, inTense and 1 or 0, inDialog and 1 or 0,
         inRiding and 1 or 0, inPickpocketing and 1 or 0,
         inUnconscious and 1 or 0, inDead and 1 or 0, inWanted and 1 or 0, inArmed and 1 or 0, inCarryingCorpse and 1 or 0,
         inGambling and 1 or 0, inAlchemy and 1 or 0, inSharpening and 1 or 0, inReading and 1 or 0, inTranscribing and 1 or 0, inSmithing and 1 or 0,
-        isSitting and 1 or 0, isLaying and 1 or 0, inHungry and 1 or 0, inExhausted and 1 or 0, inOutOfBreath and 1 or 0))
+        isSitting and 1 or 0, isLaying and 1 or 0, inHungry and 1 or 0, inExhausted and 1 or 0, inOutOfBreath and 1 or 0, inLockpicking and 1 or 0))
 
     -- Deliberately local-only: never logged/broadcast, so peers never see
     -- this - the F2 panel just reads these cached fields directly on its

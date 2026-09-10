@@ -121,8 +121,14 @@ public sealed record ItemClaimResolvedMessage(uint DropId, byte WinnerPlayerId);
 /// scale where higher is "more fed"/"more rested"; stamina is uncapped at
 /// 100 since it scales with skills, so its threshold is a low absolute
 /// value rather than a fraction).
+///
+/// InLockpicking ([Lockpicking]) uses the same `.nUserId` trick as the
+/// minigame tags above, applied to AnimDoor (locked doors) and Stash
+/// (chests/stashes) - both confirmed live to carry the same field. Folded
+/// into one tag rather than split by target: mechanically it's the same
+/// minigame either way.
 /// </summary>
-public sealed record PositionUpdateMessage(byte PlayerId, float X, float Y, float Z, bool IsCrouching, float CurrentHp, float MaxHp, bool InCombat, bool InDanger, bool InTense, bool InDialog, bool InRiding, bool InPickpocketing, bool InUnconscious, bool InDead, bool InWanted, bool InArmed, bool InCarryingCorpse, bool InGambling, bool InAlchemy, bool InSharpening, bool InReading, bool InTranscribing, bool InSmithing, bool IsSitting, bool IsLaying, bool InHungry, bool InExhausted, bool InOutOfBreath);
+public sealed record PositionUpdateMessage(byte PlayerId, float X, float Y, float Z, bool IsCrouching, float CurrentHp, float MaxHp, bool InCombat, bool InDanger, bool InTense, bool InDialog, bool InRiding, bool InPickpocketing, bool InUnconscious, bool InDead, bool InWanted, bool InArmed, bool InCarryingCorpse, bool InGambling, bool InAlchemy, bool InSharpening, bool InReading, bool InTranscribing, bool InSmithing, bool IsSitting, bool IsLaying, bool InHungry, bool InExhausted, bool InOutOfBreath, bool InLockpicking);
 
 public static class Protocol
 {
@@ -289,7 +295,7 @@ public static class Protocol
 
     public static byte[] Encode(PositionUpdateMessage m)
     {
-        var payload = new byte[44];
+        var payload = new byte[45];
         var span = payload.AsSpan();
         span[0] = m.PlayerId;
         BitConverter.TryWriteBytes(span[1..5], m.X);
@@ -320,6 +326,7 @@ public static class Protocol
         span[41] = (byte)(m.InHungry ? 1 : 0);
         span[42] = (byte)(m.InExhausted ? 1 : 0);
         span[43] = (byte)(m.InOutOfBreath ? 1 : 0);
+        span[44] = (byte)(m.InLockpicking ? 1 : 0);
         return EncodeFrame(MessageType.PositionUpdate, payload);
     }
 
@@ -355,6 +362,7 @@ public static class Protocol
             IsLaying: span.Length > 40 && span[40] != 0,
             InHungry: span.Length > 41 && span[41] != 0,
             InExhausted: span.Length > 42 && span[42] != 0,
-            InOutOfBreath: span.Length > 43 && span[43] != 0);
+            InOutOfBreath: span.Length > 43 && span[43] != 0,
+            InLockpicking: span.Length > 44 && span[44] != 0);
     }
 }
