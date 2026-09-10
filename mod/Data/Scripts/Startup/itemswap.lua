@@ -1619,15 +1619,20 @@ end
 -- transitions can silently disrupt a Script.SetTimer chain), so ticks
 -- during the real dial's transition can't be trusted to land every 250ms.
 -- A coarser but independent 1s poll is more robust precisely because nothing
--- else depends on its exact cadence. 60 seconds/tick as the threshold: 1x-
--- speed baseline flow is ~34 seconds per real second, so 60 gives comfortable
--- margin above that while still being trivially crossed by a real skip
--- (which dumps thousands of seconds at once).
+-- else depends on its exact cadence. 300 seconds/tick (5 minutes) as the
+-- threshold: measured 1x-speed baseline flow is ~34 game-seconds per real
+-- second, but that's one session's measurement, not a guaranteed constant -
+-- day-length settings, mounts, or other activity could plausibly push it
+-- well above that (the user's own worry: what if a real second is ever
+-- closer to a full game-minute of flow?). 300 stays a comfortable multiple
+-- above even that worse-case guess while remaining trivially crossed by a
+-- real skip (which dumps thousands of seconds at once, so detection speed
+-- for genuine skips is unaffected either way).
 ItemSwap.timeSkipIntervalMs = 1000
 ItemSwap.timeSkipRunning = false
 ItemSwap.lastWorldTime = nil
 ItemSwap.timeSkipInProgress = false
-ItemSwap.timeSkipDeltaThreshold = 60  -- seconds/tick at this 1s cadence
+ItemSwap.timeSkipDeltaThreshold = 300  -- seconds/tick at this 1s cadence
 
 function ItemSwap_TimeSkipOn()
     if ItemSwap.timeSkipRunning then return end
