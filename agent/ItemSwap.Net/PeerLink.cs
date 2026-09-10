@@ -62,7 +62,7 @@ public sealed class PeerLink : IAsyncDisposable
     public event Action<WeatherUpdateMessage>? WeatherUpdateReceived;
     /// <summary>A player (any player) just finished an in-game time skip - every other player's local game should force-match it.</summary>
     public event Action<TimeSkipMessage>? TimeSkipReceived;
-    /// <summary>Host-only: a joiner just armed and wants the host's current time - the host's agent should query its own Calendar.GetWorldTime() and reply with NotifyLocalTimeSkipAsync.</summary>
+    /// <summary>Some player just armed and wants everyone's current time - this player's agent should query its own Calendar.GetWorldTime() and reply with NotifyLocalTimeSkipAsync. Fires for host and joiner alike.</summary>
     public event Action<TimeSyncRequestMessage>? TimeSyncRequestReceived;
 
     private sealed class ConnectedPeer
@@ -201,13 +201,20 @@ public sealed class PeerLink : IAsyncDisposable
                             break;
                         }
                     case MessageType.TimeSyncRequest:
-                        // Not relayed - only the host ever needs to see this,
-                        // and it answers via a normal TimeSkipMessage
-                        // broadcast (handled entirely by Program.cs, which
-                        // owns the RC connection this needs to query the
-                        // host's own game).
-                        TimeSyncRequestReceived?.Invoke(Protocol.DecodeTimeSyncRequest(frame.Value.Payload));
-                        break;
+                        {
+                            // Relayed to everyone else, same as ItemDrop -
+                            // any connected player might be the one with a
+                            // trustworthy clock (e.g. the asker's own save
+                            // just reloaded and is now behind), not just the
+                            // host. The host's own game answers too (fired
+                            // here), each recipient replies with its own
+                            // current time as a normal TimeSkipMessage
+                            // broadcast - handled entirely by Program.cs.
+                            var msg = Protocol.DecodeTimeSyncRequest(frame.Value.Payload);
+                            TimeSyncRequestReceived?.Invoke(msg);
+                            await BroadcastAsync(Protocol.Encode(msg), excludePlayerId: peer.PlayerId).ConfigureAwait(false);
+                            break;
+                        }
                     case MessageType.Heartbeat:
                         break;
                     case MessageType.Disconnect:
@@ -331,6 +338,12 @@ public sealed class PeerLink : IAsyncDisposable
                     case MessageType.TimeSkip:
                         TimeSkipReceived?.Invoke(Protocol.DecodeTimeSkip(frame.Value.Payload));
                         break;
+                    case MessageType.TimeSyncRequest:
+                        // Relayed here by the host from another joiner (or
+                        // the host's own arm) - this joiner's game should
+                        // answer too, same as the host does.
+                        TimeSyncRequestReceived?.Invoke(Protocol.DecodeTimeSyncRequest(frame.Value.Payload));
+                        break;
                     case MessageType.Heartbeat:
                         break;
                     case MessageType.Disconnect:
@@ -400,15 +413,21 @@ public sealed class PeerLink : IAsyncDisposable
     }
 
     /// <summary>
-    /// Joiner-only: call once whenever the local mod arms, to snap to the
-    /// host's current time immediately rather than waiting for the host's
-    /// next real skip. No-ops for the host - it has nothing to ask itself.
+    /// Call once whenever the local mod arms, with this player's own
+    /// current world time, to two-way sync with everyone else connected
+    /// rather than waiting for someone's next real skip. Symmetric by
+    /// design (works for the host too) - see TimeSyncRequestMessage for why
+    /// carrying myWorldTime here means neither side needs to arbitrate who
+    /// "wins": every recipient just tries applying it (a safe no-op if
+    /// they're already ahead) and separately answers with its own time.
     /// </summary>
-    public async Task NotifyTimeSyncRequestAsync()
+    public async Task NotifyTimeSyncRequestAsync(double myWorldTime)
     {
-        if (_isHost) return;
-        var msg = new TimeSyncRequestMessage(LocalPlayerId);
-        await SendAsync(_hostConnection!, Protocol.Encode(msg)).ConfigureAwait(false);
+        var msg = new TimeSyncRequestMessage(LocalPlayerId, myWorldTime);
+        if (_isHost)
+            await BroadcastAsync(Protocol.Encode(msg)).ConfigureAwait(false);
+        else
+            await SendAsync(_hostConnection!, Protocol.Encode(msg)).ConfigureAwait(false);
     }
 
     /// <summary>Call when THIS player physically picks up a tracked drop (local or a peer's).</summary>

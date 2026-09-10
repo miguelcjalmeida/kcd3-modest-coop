@@ -80,16 +80,22 @@ public sealed record WeatherUpdateMessage(float RainIntensity);
 public sealed record TimeSkipMessage(byte FromPlayerId, double NewWorldTime);
 
 /// <summary>
-/// Joiner-only, sent once on arm (PeerLink.NotifyTimeSyncRequestAsync
-/// no-ops for the host - it has nothing to ask itself). The host answers by
-/// querying its own Calendar.GetWorldTime() and broadcasting a normal
-/// TimeSkipMessage(HostPlayerId, ...) - the exact same message and
-/// receiving logic as an actual in-game time skip, since "apply this
-/// world time" is identical either way. This is what lets a freshly-armed
-/// player snap to the host's clock immediately instead of waiting for the
-/// host's next real skip.
+/// Sent once whenever any player's mod arms - host or joiner alike.
+/// Carries the asker's own current world time (not just their id), which
+/// is what makes this a genuinely two-way sync in one round trip: every
+/// recipient immediately tries applying FromWorldTime locally (in case the
+/// ASKER turns out to be the one who's ahead) and separately answers with
+/// its own current time via a normal TimeSkipMessage (in case the
+/// RECIPIENT is the one who's ahead). Relayed to every other connected
+/// player (like ItemDrop). No "first reply wins" arbitration needed on
+/// either side - Calendar.SetWorldTime() is confirmed live to silently
+/// no-op for a value that isn't ahead of the current time, so every
+/// player can safely apply every value it ever sees (a reply, a request's
+/// embedded time, or an organic skip) unconditionally and the engine's own
+/// forward-only enforcement makes everyone converge on whoever is actually
+/// furthest ahead - see ItemSwap_OnPeerTimeSkipBody.
 /// </summary>
-public sealed record TimeSyncRequestMessage(byte FromPlayerId);
+public sealed record TimeSyncRequestMessage(byte FromPlayerId, double FromWorldTime);
 
 /// <summary>
 /// Unlike ItemDropMessage's X/Y/Z, these coordinates ARE meant to be used
@@ -429,8 +435,14 @@ public static class Protocol
     public static TimeSkipMessage DecodeTimeSkip(byte[] payload) =>
         new(payload[0], BitConverter.ToDouble(payload.AsSpan(1, 8)));
 
-    public static byte[] Encode(TimeSyncRequestMessage m) =>
-        EncodeFrame(MessageType.TimeSyncRequest, [m.FromPlayerId]);
+    public static byte[] Encode(TimeSyncRequestMessage m)
+    {
+        var payload = new byte[9];
+        payload[0] = m.FromPlayerId;
+        BitConverter.TryWriteBytes(payload.AsSpan(1, 8), m.FromWorldTime);
+        return EncodeFrame(MessageType.TimeSyncRequest, payload);
+    }
 
-    public static TimeSyncRequestMessage DecodeTimeSyncRequest(byte[] payload) => new(payload[0]);
+    public static TimeSyncRequestMessage DecodeTimeSyncRequest(byte[] payload) =>
+        new(payload[0], BitConverter.ToDouble(payload.AsSpan(1, 8)));
 }

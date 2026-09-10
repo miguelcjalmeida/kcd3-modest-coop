@@ -20,6 +20,7 @@ if (args.Length < 3)
     Console.WriteLine("  pos <x> <y> <z> [crouching] [curHp] [maxHp] [inCombat] [inDanger] [inTense] [inDialog] [inRiding] [inPickpocketing] [inUnconscious] [inDead] [inWanted] [inArmed] [inCarryingCorpse] [inGambling] [inAlchemy] [inSharpening] [inReading] [inTranscribing] [inSmithing] [isSitting] [isLaying] [inHungry] [inExhausted] [inOutOfBreath] [inLockpicking]  - simulate this fake player's position (bool fields: 1/true; HP optional, defaults to unknown)");
     Console.WriteLine("  weather <rainIntensity>                   - host mode only: push a weather change to everyone connected (0-1)");
     Console.WriteLine("  timeskip <newWorldTime>                   - simulate this fake player finishing an in-game time skip (Calendar.GetWorldTime() seconds)");
+    Console.WriteLine("  timesyncrequest <myWorldTime>              - simulate this fake player's mod arming and asking everyone what time it is (carries this player's own current time too)");
     Console.WriteLine("  quit");
     return 1;
 }
@@ -60,6 +61,8 @@ link.WeatherUpdateReceived += m => Console.WriteLine(
     $"[peer] weather update: rainIntensity={m.RainIntensity:F3}");
 link.TimeSkipReceived += m => Console.WriteLine(
     $"[peer] time skip: fromPlayerId={m.FromPlayerId} newWorldTime={m.NewWorldTime}");
+link.TimeSyncRequestReceived += m => Console.WriteLine(
+    $"[peer] time sync requested by playerId={m.FromPlayerId} theirWorldTime={m.FromWorldTime}");
 
 Console.WriteLine("[peer] ready. Commands: drop <classGuid> <amount> <health> | claim <dropId> | quit");
 while (true)
@@ -151,12 +154,11 @@ while (true)
             await link.NotifyLocalTimeSkipAsync(newWorldTime);
             Console.WriteLine($"[peer] sent time skip newWorldTime={newWorldTime}");
         }
-        else if (parts[0] == "timesyncrequest")
+        else if (parts[0] == "timesyncrequest" && parts.Length >= 2)
         {
-            await link.NotifyTimeSyncRequestAsync();
-            Console.WriteLine(link.IsHost
-                ? "[peer] I'm the host - timesyncrequest had no effect"
-                : "[peer] sent time sync request to host");
+            var myWorldTime = double.Parse(parts[1], CultureInfo.InvariantCulture);
+            await link.NotifyTimeSyncRequestAsync(myWorldTime);
+            Console.WriteLine($"[peer] asked everyone connected what time it is, myWorldTime={myWorldTime}");
         }
         else
         {

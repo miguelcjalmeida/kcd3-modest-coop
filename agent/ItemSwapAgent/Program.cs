@@ -159,13 +159,21 @@ peerLink.TimeSkipReceived += async msg =>
 
 peerLink.TimeSyncRequestReceived += async msg =>
 {
-    // Only ever fires on the host (see PeerLink's TimeSyncRequest dispatch -
-    // it's never relayed or delivered to a joiner). Queries this host's own
-    // game for its current time; the reply comes back via the
-    // [ITEMSWAP-TIMESYNC] log-tail branch above, not synchronously here -
-    // RC has no inbound value-return channel, same as every other
-    // game -> agent signal in this mod.
-    Console.WriteLine($"[agent] time sync requested by player {msg.FromPlayerId}");
+    // Fires for host and joiner alike (PeerLink relays this to every
+    // connected player, like ItemDrop). Two things happen: (1) this
+    // player's own game tries applying the asker's embedded time right
+    // now, in case the ASKER turns out to be the one who's ahead -
+    // reusing ItemSwap_OnPeerTimeSkip is safe and correct here since it's
+    // the same "apply if ahead, otherwise no-op" logic either way; (2)
+    // this agent queries its own game for its current time to answer with
+    // - that reply comes back via the [ITEMSWAP-TIMESYNC] log-tail branch
+    // above, not synchronously here, since RC has no inbound value-return
+    // channel.
+    var fromName = playerNames.TryGetValue(msg.FromPlayerId, out var n) ? n : $"Player {msg.FromPlayerId}";
+    var fromWorldTime = msg.FromWorldTime.ToString(CultureInfo.InvariantCulture);
+    Console.WriteLine($"[agent] time sync requested by {fromName}: theirWorldTime={fromWorldTime}");
+    try { await rc.SendLuaAsync($"ItemSwap_OnPeerTimeSkip({msg.FromPlayerId}, '{fromName.Replace("'", "\\'")}', {fromWorldTime})"); }
+    catch (Exception ex) { Console.WriteLine($"[agent] failed to apply asker's time: {ex.Message}"); }
     try { await rc.SendLuaAsync("System.LogAlways('[ITEMSWAP-TIMESYNC] ' .. tostring(Calendar.GetWorldTime()))"); }
     catch (Exception ex) { Console.WriteLine($"[agent] failed to query time for sync reply: {ex.Message}"); }
 };
@@ -265,17 +273,17 @@ logTail.LineRead += async line =>
     var timeSyncIndex = line.IndexOf(timeSyncTag, StringComparison.Ordinal);
     if (timeSyncIndex >= 0)
     {
-        // Host-only in practice: this line only ever gets emitted in answer
-        // to our own TimeSyncRequestReceived handler below, which itself
-        // only ever fires on the host (see PeerLink's TimeSyncRequest
-        // dispatch). Reusing NotifyLocalTimeSkipAsync here broadcasts it to
-        // every joiner via the exact same TimeSkipMessage a real in-game
-        // skip would produce.
+        // This line gets emitted in answer to our own TimeSyncRequestReceived
+        // handler above, which now fires whenever ANY player (host or
+        // joiner) arms and asks - see PeerLink's TimeSyncRequest relay.
+        // NotifyLocalTimeSkipAsync sends this agent's answer out correctly
+        // either way: broadcasts to every joiner if this agent is host, or
+        // sends to the host (who relays) if this agent is a joiner.
         var raw = line[(timeSyncIndex + timeSyncTag.Length)..].Trim();
-        if (double.TryParse(raw, CultureInfo.InvariantCulture, out var hostWorldTime))
+        if (double.TryParse(raw, CultureInfo.InvariantCulture, out var myWorldTime))
         {
-            Console.WriteLine($"[agent] answering time sync request: hostWorldTime={hostWorldTime}");
-            try { await peerLink.NotifyLocalTimeSkipAsync(hostWorldTime); }
+            Console.WriteLine($"[agent] answering time sync request: myWorldTime={myWorldTime}");
+            try { await peerLink.NotifyLocalTimeSkipAsync(myWorldTime); }
             catch (Exception ex) { Console.WriteLine($"[agent] failed to broadcast time sync reply: {ex.Message}"); }
         }
         return;
@@ -324,13 +332,14 @@ logTail.LineRead += async line =>
                 await peerLink.NotifyLocalTimeSkipAsync(newWorldTime);
                 break;
 
-            // timesyncrequest - Lua just armed and wants to snap to the
-            // host's current time. NotifyTimeSyncRequestAsync no-ops on the
-            // host's own agent, so this is safe to call unconditionally
-            // regardless of role.
-            case "timesyncrequest":
-                Console.WriteLine("[agent] requesting time sync from host");
-                await peerLink.NotifyTimeSyncRequestAsync();
+            // timesyncrequest <myWorldTime> - Lua just armed and wants a
+            // two-way time sync with everyone connected (symmetric - works
+            // the same whether this agent is host or joiner). Carries this
+            // player's own current world time so recipients can catch up
+            // to it too, not just answer with their own.
+            case "timesyncrequest" when parts.Length >= 2 && double.TryParse(parts[1], CultureInfo.InvariantCulture, out var myWorldTime):
+                Console.WriteLine($"[agent] requesting time sync from everyone connected: myWorldTime={myWorldTime}");
+                await peerLink.NotifyTimeSyncRequestAsync(myWorldTime);
                 break;
 
             // pos <x> <y> <z> <crouching> <curHp> <maxHp> <inCombat> <inDanger> -

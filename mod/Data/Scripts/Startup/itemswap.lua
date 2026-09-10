@@ -513,13 +513,24 @@ end
 -- Milestone 10: time-skip sync. Called by the agent whenever any player
 -- (including possibly this one, relayed back through the host - though the
 -- host never re-sends to the original sender, so that shouldn't happen in
--- practice) finishes an in-game time skip:
+-- practice) finishes an in-game time skip, answers this player's own "what
+-- time is it?" request on arm, or is the asker whose own embedded time an
+-- arm request is carrying (see ItemSwap_StartOnPart) - all three cases
+-- reduce to the exact same thing: "here's a world time, apply it if it's
+-- useful":
 --   #ItemSwap_OnPeerTimeSkip(<playerId>, "<name>", <newWorldTime>)
--- Force-applies it via Calendar.SetWorldTime() - the same function
--- TimeUtils.ForwardTime (the game's own helper) uses internally, confirmed
--- live. Critically, updates ItemSwap.lastWorldTime immediately to the new
--- value so the very next ItemSwap_TimeSkipTickBody tick doesn't see this externally-
--- applied jump as a local skip and re-broadcast it right back out.
+--
+-- No arbitration needed over multiple replies arriving for the same
+-- request, and no risk of a stray reply undoing a better one already
+-- applied: confirmed live, Calendar.SetWorldTime() silently no-ops for a
+-- value that isn't ahead of the current time - the engine enforces time
+-- only ever moving forward, full stop, regardless of what's asked of it.
+-- That means it's always safe to just try applying every value this ever
+-- sees, from anyone, in any order - whoever is genuinely furthest ahead is
+-- exactly what everyone naturally converges on, with no bookkeeping needed
+-- on our side at all. lastWorldTime is only touched (and only the log
+-- fires) when the apply actually did something, so ItemSwap_TimeSkipTickBody
+-- can't mistake a same-or-behind no-op for a local skip either.
 function ItemSwap_OnPeerTimeSkip(playerId, name, newWorldTime)
     local ok, err = pcall(ItemSwap_OnPeerTimeSkipBody, playerId, name, newWorldTime)
     if not ok then
@@ -530,6 +541,12 @@ end
 function ItemSwap_OnPeerTimeSkipBody(playerId, name, newWorldTime)
     newWorldTime = tonumber(newWorldTime)
     if not newWorldTime then return end
+
+    local curOk, curWt = pcall(function() return Calendar.GetWorldTime() end)
+    if curOk and type(curWt) == "number" and newWorldTime <= curWt then
+        return  -- not ahead of us - Calendar.SetWorldTime would no-op anyway
+    end
+
     Calendar.SetWorldTime(newWorldTime)
     ItemSwap.lastWorldTime = newWorldTime
     ItemSwap.timeSkipInProgress = false
@@ -1883,13 +1900,15 @@ function ItemSwap_StartOnPart()
     ItemSwap_AnimOn()
     ItemSwap_CooldownDisplayOn()
     ItemSwap_TimeSkipOn()
-    -- Every arm asks the host "what time is it?" so a freshly-armed player
-    -- (or one that just reconnected) snaps to the host's clock immediately,
-    -- rather than waiting for the host's next real skip. The agent decides
-    -- whether this does anything - PeerLink.NotifyTimeSyncRequestAsync
-    -- no-ops on the host's own agent, so Lua doesn't need to know its own
-    -- role here.
-    System.LogAlways("[ITEMSWAP-EVT] timesyncrequest")
+    -- Every arm asks everyone connected "what time is it?" AND tells them
+    -- our own current time in the same message - a genuine two-way sync in
+    -- one round trip (symmetric: works the same whether we're host or
+    -- joiner, since neither is a guaranteed reliable clock - a reloaded
+    -- save can go backward either way). No arbitration needed on either
+    -- end: see ItemSwap_OnPeerTimeSkipBody for why every value anyone ever
+    -- sends is safe to just try applying.
+    local wtOk, myWorldTime = pcall(function() return Calendar.GetWorldTime() end)
+    System.LogAlways("[ITEMSWAP-EVT] timesyncrequest " .. string.format("%.3f", (wtOk and myWorldTime) or 0))
     System.LogAlways("[ITEMSWAP] itemswap_start: rearmed")
 end
 
