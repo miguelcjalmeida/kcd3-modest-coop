@@ -1883,6 +1883,13 @@ function ItemSwap_StartOnPart()
     ItemSwap_AnimOn()
     ItemSwap_CooldownDisplayOn()
     ItemSwap_TimeSkipOn()
+    -- Every arm asks the host "what time is it?" so a freshly-armed player
+    -- (or one that just reconnected) snaps to the host's clock immediately,
+    -- rather than waiting for the host's next real skip. The agent decides
+    -- whether this does anything - PeerLink.NotifyTimeSyncRequestAsync
+    -- no-ops on the host's own agent, so Lua doesn't need to know its own
+    -- role here.
+    System.LogAlways("[ITEMSWAP-EVT] timesyncrequest")
     System.LogAlways("[ITEMSWAP] itemswap_start: rearmed")
 end
 

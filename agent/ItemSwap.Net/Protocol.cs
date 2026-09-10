@@ -29,6 +29,7 @@ public enum MessageType : byte
     PositionUpdate = 0x0A,
     WeatherUpdate = 0x0B,
     TimeSkip = 0x0C,
+    TimeSyncRequest = 0x0D,
 }
 
 public sealed record HelloMessage(byte ProtocolVersion, string Name, byte[] SecretHash);
@@ -77,6 +78,18 @@ public sealed record WeatherUpdateMessage(float RainIntensity);
 /// exact-integer range).
 /// </summary>
 public sealed record TimeSkipMessage(byte FromPlayerId, double NewWorldTime);
+
+/// <summary>
+/// Joiner-only, sent once on arm (PeerLink.NotifyTimeSyncRequestAsync
+/// no-ops for the host - it has nothing to ask itself). The host answers by
+/// querying its own Calendar.GetWorldTime() and broadcasting a normal
+/// TimeSkipMessage(HostPlayerId, ...) - the exact same message and
+/// receiving logic as an actual in-game time skip, since "apply this
+/// world time" is identical either way. This is what lets a freshly-armed
+/// player snap to the host's clock immediately instead of waiting for the
+/// host's next real skip.
+/// </summary>
+public sealed record TimeSyncRequestMessage(byte FromPlayerId);
 
 /// <summary>
 /// Unlike ItemDropMessage's X/Y/Z, these coordinates ARE meant to be used
@@ -415,4 +428,9 @@ public static class Protocol
 
     public static TimeSkipMessage DecodeTimeSkip(byte[] payload) =>
         new(payload[0], BitConverter.ToDouble(payload.AsSpan(1, 8)));
+
+    public static byte[] Encode(TimeSyncRequestMessage m) =>
+        EncodeFrame(MessageType.TimeSyncRequest, [m.FromPlayerId]);
+
+    public static TimeSyncRequestMessage DecodeTimeSyncRequest(byte[] payload) => new(payload[0]);
 }

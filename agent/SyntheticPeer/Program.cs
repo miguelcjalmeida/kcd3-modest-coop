@@ -151,6 +151,13 @@ while (true)
             await link.NotifyLocalTimeSkipAsync(newWorldTime);
             Console.WriteLine($"[peer] sent time skip newWorldTime={newWorldTime}");
         }
+        else if (parts[0] == "timesyncrequest")
+        {
+            await link.NotifyTimeSyncRequestAsync();
+            Console.WriteLine(link.IsHost
+                ? "[peer] I'm the host - timesyncrequest had no effect"
+                : "[peer] sent time sync request to host");
+        }
         else
         {
             Console.WriteLine("[peer] unrecognized command");

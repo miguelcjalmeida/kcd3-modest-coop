@@ -62,6 +62,8 @@ public sealed class PeerLink : IAsyncDisposable
     public event Action<WeatherUpdateMessage>? WeatherUpdateReceived;
     /// <summary>A player (any player) just finished an in-game time skip - every other player's local game should force-match it.</summary>
     public event Action<TimeSkipMessage>? TimeSkipReceived;
+    /// <summary>Host-only: a joiner just armed and wants the host's current time - the host's agent should query its own Calendar.GetWorldTime() and reply with NotifyLocalTimeSkipAsync.</summary>
+    public event Action<TimeSyncRequestMessage>? TimeSyncRequestReceived;
 
     private sealed class ConnectedPeer
     {
@@ -198,6 +200,14 @@ public sealed class PeerLink : IAsyncDisposable
                             await BroadcastAsync(Protocol.Encode(msg), excludePlayerId: peer.PlayerId).ConfigureAwait(false);
                             break;
                         }
+                    case MessageType.TimeSyncRequest:
+                        // Not relayed - only the host ever needs to see this,
+                        // and it answers via a normal TimeSkipMessage
+                        // broadcast (handled entirely by Program.cs, which
+                        // owns the RC connection this needs to query the
+                        // host's own game).
+                        TimeSyncRequestReceived?.Invoke(Protocol.DecodeTimeSyncRequest(frame.Value.Payload));
+                        break;
                     case MessageType.Heartbeat:
                         break;
                     case MessageType.Disconnect:
@@ -387,6 +397,18 @@ public sealed class PeerLink : IAsyncDisposable
             await BroadcastAsync(Protocol.Encode(msg)).ConfigureAwait(false);
         else
             await SendAsync(_hostConnection!, Protocol.Encode(msg)).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Joiner-only: call once whenever the local mod arms, to snap to the
+    /// host's current time immediately rather than waiting for the host's
+    /// next real skip. No-ops for the host - it has nothing to ask itself.
+    /// </summary>
+    public async Task NotifyTimeSyncRequestAsync()
+    {
+        if (_isHost) return;
+        var msg = new TimeSyncRequestMessage(LocalPlayerId);
+        await SendAsync(_hostConnection!, Protocol.Encode(msg)).ConfigureAwait(false);
     }
 
     /// <summary>Call when THIS player physically picks up a tracked drop (local or a peer's).</summary>
