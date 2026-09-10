@@ -102,8 +102,27 @@ public sealed record ItemClaimResolvedMessage(uint DropId, byte WinnerPlayerId);
 /// player.actor:IsCarryingCorpse()) round out the panel tags - all five
 /// individually type-checked live (real booleans, no IsOnLadder-style
 /// surprises) before being wired up.
+///
+/// InGambling/InAlchemy/InSharpening/InReading/InTranscribing/InSmithing
+/// ([Gambling]/[Alchemy]/[Sharpening]/[Reading]/[Transcribing]/[Smithing])
+/// come from a real, native-set field discovered in the game's own source:
+/// every minigame station entity (DiceInteractor, AlchemyTable, Grindstone,
+/// Book/RecipesBook, TranscriptionTable, Smithery - all derive from
+/// UsableItem) carries a `.nUserId` field set by C_Minigame::Start/Stop to
+/// the using player's raw id (player:GetRawId()), 0 when idle. The mod
+/// scans nearby entities for these classes and compares .nUserId.
+///
+/// IsSitting/IsLaying ([Sitting]/[Laying]) are player.player:IsSitting()/
+/// IsLaying() - confirmed live, real booleans.
+///
+/// InHungry/InExhausted/InOutOfBreath ([Hungry]/[Exhausted]/[Out of Breath])
+/// are threshold reads of player.soul:GetState('hunger'/'exhaust'/'stamina')
+/// - also discovered in the game's own source (FeatureTests confirm a 0-100
+/// scale where higher is "more fed"/"more rested"; stamina is uncapped at
+/// 100 since it scales with skills, so its threshold is a low absolute
+/// value rather than a fraction).
 /// </summary>
-public sealed record PositionUpdateMessage(byte PlayerId, float X, float Y, float Z, bool IsCrouching, float CurrentHp, float MaxHp, bool InCombat, bool InDanger, bool InTense, bool InDialog, bool InRiding, bool InPickpocketing, bool InUnconscious, bool InDead, bool InWanted, bool InArmed, bool InCarryingCorpse);
+public sealed record PositionUpdateMessage(byte PlayerId, float X, float Y, float Z, bool IsCrouching, float CurrentHp, float MaxHp, bool InCombat, bool InDanger, bool InTense, bool InDialog, bool InRiding, bool InPickpocketing, bool InUnconscious, bool InDead, bool InWanted, bool InArmed, bool InCarryingCorpse, bool InGambling, bool InAlchemy, bool InSharpening, bool InReading, bool InTranscribing, bool InSmithing, bool IsSitting, bool IsLaying, bool InHungry, bool InExhausted, bool InOutOfBreath);
 
 public static class Protocol
 {
@@ -270,7 +289,7 @@ public static class Protocol
 
     public static byte[] Encode(PositionUpdateMessage m)
     {
-        var payload = new byte[33];
+        var payload = new byte[44];
         var span = payload.AsSpan();
         span[0] = m.PlayerId;
         BitConverter.TryWriteBytes(span[1..5], m.X);
@@ -290,6 +309,17 @@ public static class Protocol
         span[30] = (byte)(m.InWanted ? 1 : 0);
         span[31] = (byte)(m.InArmed ? 1 : 0);
         span[32] = (byte)(m.InCarryingCorpse ? 1 : 0);
+        span[33] = (byte)(m.InGambling ? 1 : 0);
+        span[34] = (byte)(m.InAlchemy ? 1 : 0);
+        span[35] = (byte)(m.InSharpening ? 1 : 0);
+        span[36] = (byte)(m.InReading ? 1 : 0);
+        span[37] = (byte)(m.InTranscribing ? 1 : 0);
+        span[38] = (byte)(m.InSmithing ? 1 : 0);
+        span[39] = (byte)(m.IsSitting ? 1 : 0);
+        span[40] = (byte)(m.IsLaying ? 1 : 0);
+        span[41] = (byte)(m.InHungry ? 1 : 0);
+        span[42] = (byte)(m.InExhausted ? 1 : 0);
+        span[43] = (byte)(m.InOutOfBreath ? 1 : 0);
         return EncodeFrame(MessageType.PositionUpdate, payload);
     }
 
@@ -314,6 +344,17 @@ public static class Protocol
             InDead: span.Length > 29 && span[29] != 0,
             InWanted: span.Length > 30 && span[30] != 0,
             InArmed: span.Length > 31 && span[31] != 0,
-            InCarryingCorpse: span.Length > 32 && span[32] != 0);
+            InCarryingCorpse: span.Length > 32 && span[32] != 0,
+            InGambling: span.Length > 33 && span[33] != 0,
+            InAlchemy: span.Length > 34 && span[34] != 0,
+            InSharpening: span.Length > 35 && span[35] != 0,
+            InReading: span.Length > 36 && span[36] != 0,
+            InTranscribing: span.Length > 37 && span[37] != 0,
+            InSmithing: span.Length > 38 && span[38] != 0,
+            IsSitting: span.Length > 39 && span[39] != 0,
+            IsLaying: span.Length > 40 && span[40] != 0,
+            InHungry: span.Length > 41 && span[41] != 0,
+            InExhausted: span.Length > 42 && span[42] != 0,
+            InOutOfBreath: span.Length > 43 && span[43] != 0);
     }
 }

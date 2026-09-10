@@ -16,7 +16,7 @@ if (args.Length < 3)
     Console.WriteLine("Then type commands:");
     Console.WriteLine("  drop <itemClassGuid> <amount> <health> [x] [y] [z]   - simulate this fake player dropping an item (position optional)");
     Console.WriteLine("  claim <dropId>                            - simulate this fake player picking up a tracked drop");
-    Console.WriteLine("  pos <x> <y> <z> [crouching] [curHp] [maxHp] [inCombat] [inDanger] [inTense] [inDialog] [inRiding] [inPickpocketing] [inUnconscious] [inDead] [inWanted] [inArmed] [inCarryingCorpse]  - simulate this fake player's position (bool fields: 1/true; HP optional, defaults to unknown)");
+    Console.WriteLine("  pos <x> <y> <z> [crouching] [curHp] [maxHp] [inCombat] [inDanger] [inTense] [inDialog] [inRiding] [inPickpocketing] [inUnconscious] [inDead] [inWanted] [inArmed] [inCarryingCorpse] [inGambling] [inAlchemy] [inSharpening] [inReading] [inTranscribing] [inSmithing] [isSitting] [isLaying] [inHungry] [inExhausted] [inOutOfBreath]  - simulate this fake player's position (bool fields: 1/true; HP optional, defaults to unknown)");
     Console.WriteLine("  quit");
     return 1;
 }
@@ -101,8 +101,19 @@ while (true)
             var inWanted = parts.Length >= 16 && (parts[15] == "1" || parts[15].Equals("true", StringComparison.OrdinalIgnoreCase));
             var inArmed = parts.Length >= 17 && (parts[16] == "1" || parts[16].Equals("true", StringComparison.OrdinalIgnoreCase));
             var inCarryingCorpse = parts.Length >= 18 && (parts[17] == "1" || parts[17].Equals("true", StringComparison.OrdinalIgnoreCase));
-            await link.NotifyLocalPositionAsync(x, y, z, crouching, curHp, maxHp, inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing, inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse);
-            Console.WriteLine($"[peer] sent position {x},{y},{z} crouching={crouching} hp={curHp}/{maxHp} inCombat={inCombat} inDanger={inDanger} inTense={inTense} inDialog={inDialog} inRiding={inRiding} inPickpocketing={inPickpocketing} inUnconscious={inUnconscious} inDead={inDead} inWanted={inWanted} inArmed={inArmed} inCarryingCorpse={inCarryingCorpse}");
+            var inGambling = parts.Length >= 19 && (parts[18] == "1" || parts[18].Equals("true", StringComparison.OrdinalIgnoreCase));
+            var inAlchemy = parts.Length >= 20 && (parts[19] == "1" || parts[19].Equals("true", StringComparison.OrdinalIgnoreCase));
+            var inSharpening = parts.Length >= 21 && (parts[20] == "1" || parts[20].Equals("true", StringComparison.OrdinalIgnoreCase));
+            var inReading = parts.Length >= 22 && (parts[21] == "1" || parts[21].Equals("true", StringComparison.OrdinalIgnoreCase));
+            var inTranscribing = parts.Length >= 23 && (parts[22] == "1" || parts[22].Equals("true", StringComparison.OrdinalIgnoreCase));
+            var inSmithing = parts.Length >= 24 && (parts[23] == "1" || parts[23].Equals("true", StringComparison.OrdinalIgnoreCase));
+            var isSitting = parts.Length >= 25 && (parts[24] == "1" || parts[24].Equals("true", StringComparison.OrdinalIgnoreCase));
+            var isLaying = parts.Length >= 26 && (parts[25] == "1" || parts[25].Equals("true", StringComparison.OrdinalIgnoreCase));
+            var inHungry = parts.Length >= 27 && (parts[26] == "1" || parts[26].Equals("true", StringComparison.OrdinalIgnoreCase));
+            var inExhausted = parts.Length >= 28 && (parts[27] == "1" || parts[27].Equals("true", StringComparison.OrdinalIgnoreCase));
+            var inOutOfBreath = parts.Length >= 29 && (parts[28] == "1" || parts[28].Equals("true", StringComparison.OrdinalIgnoreCase));
+            await link.NotifyLocalPositionAsync(x, y, z, crouching, curHp, maxHp, inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing, inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse, inGambling, inAlchemy, inSharpening, inReading, inTranscribing, inSmithing, isSitting, isLaying, inHungry, inExhausted, inOutOfBreath);
+            Console.WriteLine($"[peer] sent position {x},{y},{z} crouching={crouching} hp={curHp}/{maxHp} inCombat={inCombat} inDanger={inDanger} inTense={inTense} inDialog={inDialog} inRiding={inRiding} inPickpocketing={inPickpocketing} inUnconscious={inUnconscious} inDead={inDead} inWanted={inWanted} inArmed={inArmed} inCarryingCorpse={inCarryingCorpse} inGambling={inGambling} inAlchemy={inAlchemy} inSharpening={inSharpening} inReading={inReading} inTranscribing={inTranscribing} inSmithing={inSmithing} isSitting={isSitting} isLaying={isLaying} inHungry={inHungry} inExhausted={inExhausted} inOutOfBreath={inOutOfBreath}");
         }
         else
         {

@@ -266,6 +266,19 @@ ItemSwap.peerWanted = {}          -- key -> bool, latest reported IsPublicEnemy(
 ItemSwap.peerArmed = {}           -- key -> bool, latest reported IsWeaponDrawn() for that peer
 ItemSwap.peerCarryingCorpse = {}  -- key -> bool, latest reported IsCarryingCorpse() for that peer
 
+-- Milestone 8: minigame/posture/needs panel tags.
+ItemSwap.peerGambling = {}     -- key -> bool, using a DiceInteractor (nUserId == rawId)
+ItemSwap.peerAlchemy = {}      -- key -> bool, using an AlchemyTable
+ItemSwap.peerSharpening = {}   -- key -> bool, using a Grindstone
+ItemSwap.peerReading = {}      -- key -> bool, using a Book/RecipesBook
+ItemSwap.peerTranscribing = {} -- key -> bool, using a TranscriptionTable
+ItemSwap.peerSmithing = {}     -- key -> bool, using a Smithery
+ItemSwap.peerSitting = {}      -- key -> bool, latest reported player.player:IsSitting() for that peer
+ItemSwap.peerLaying = {}       -- key -> bool, latest reported player.player:IsLaying() for that peer
+ItemSwap.peerHungry = {}       -- key -> bool, hunger state below threshold
+ItemSwap.peerExhausted = {}    -- key -> bool, exhaust state below threshold
+ItemSwap.peerOutOfBreath = {}  -- key -> bool, stamina below threshold
+
 System.SetCVar('cl_comment', 1)  -- required once: Comment entities no-op their per-frame draw otherwise
 
 -- Starts (or redirects, if one is already in flight) a smooth height
@@ -291,7 +304,7 @@ end
 
 -- Called by the agent (one-shot '#'-eval is fine, no timer involved) on
 -- every position update relayed from a peer:
---   #ItemSwap_OnPeerPosition(<playerId>, <x>, <y>, <z>, "<name>", <isCrouching>, <curHp>, <maxHp>, <inCombat>, <inDanger>, <inTense>, <inDialog>, <inRiding>, <inPickpocketing>, <inUnconscious>, <inDead>, <inWanted>, <inArmed>, <inCarryingCorpse>)
+--   #ItemSwap_OnPeerPosition(<playerId>, <x>, <y>, <z>, "<name>", <isCrouching>, <curHp>, <maxHp>, <inCombat>, <inDanger>, <inTense>, <inDialog>, <inRiding>, <inPickpocketing>, <inUnconscious>, <inDead>, <inWanted>, <inArmed>, <inCarryingCorpse>, <inGambling>, <inAlchemy>, <inSharpening>, <inReading>, <inTranscribing>, <inSmithing>, <isSitting>, <isLaying>, <inHungry>, <inExhausted>, <inOutOfBreath>)
 -- Moves the existing marker+label if they exist for this player, or creates them.
 --
 -- Entirely wrapped in pcall: this runs as a raw one-shot RC eval with no
@@ -300,14 +313,14 @@ end
 -- otherwise surface only as a raw Lua error the player has no reason to
 -- notice, silently leaving their marker missing or stuck with no
 -- indication why. Logs [ITEMSWAP-ERR] instead.
-function ItemSwap_OnPeerPosition(playerId, x, y, z, name, isCrouching, curHp, maxHp, inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing, inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse)
-    local ok, err = pcall(ItemSwap_OnPeerPositionBody, playerId, x, y, z, name, isCrouching, curHp, maxHp, inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing, inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse)
+function ItemSwap_OnPeerPosition(playerId, x, y, z, name, isCrouching, curHp, maxHp, inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing, inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse, inGambling, inAlchemy, inSharpening, inReading, inTranscribing, inSmithing, isSitting, isLaying, inHungry, inExhausted, inOutOfBreath)
+    local ok, err = pcall(ItemSwap_OnPeerPositionBody, playerId, x, y, z, name, isCrouching, curHp, maxHp, inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing, inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse, inGambling, inAlchemy, inSharpening, inReading, inTranscribing, inSmithing, isSitting, isLaying, inHungry, inExhausted, inOutOfBreath)
     if not ok then
         System.LogAlways("[ITEMSWAP-ERR] OnPeerPosition threw for player " .. tostring(playerId) .. ": " .. tostring(err))
     end
 end
 
-function ItemSwap_OnPeerPositionBody(playerId, x, y, z, name, isCrouching, curHp, maxHp, inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing, inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse)
+function ItemSwap_OnPeerPositionBody(playerId, x, y, z, name, isCrouching, curHp, maxHp, inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing, inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse, inGambling, inAlchemy, inSharpening, inReading, inTranscribing, inSmithing, isSitting, isLaying, inHungry, inExhausted, inOutOfBreath)
     local key = tostring(playerId)
     local basePos = { x = tonumber(x), y = tonumber(y), z = tonumber(z) }
     if not basePos.x or not basePos.y or not basePos.z then return end
@@ -408,6 +421,17 @@ function ItemSwap_OnPeerPositionBody(playerId, x, y, z, name, isCrouching, curHp
     ItemSwap.peerWanted[key] = inWanted == true
     ItemSwap.peerArmed[key] = inArmed == true
     ItemSwap.peerCarryingCorpse[key] = inCarryingCorpse == true
+    ItemSwap.peerGambling[key] = inGambling == true
+    ItemSwap.peerAlchemy[key] = inAlchemy == true
+    ItemSwap.peerSharpening[key] = inSharpening == true
+    ItemSwap.peerReading[key] = inReading == true
+    ItemSwap.peerTranscribing[key] = inTranscribing == true
+    ItemSwap.peerSmithing[key] = inSmithing == true
+    ItemSwap.peerSitting[key] = isSitting == true
+    ItemSwap.peerLaying[key] = isLaying == true
+    ItemSwap.peerHungry[key] = inHungry == true
+    ItemSwap.peerExhausted[key] = inExhausted == true
+    ItemSwap.peerOutOfBreath[key] = inOutOfBreath == true
 end
 
 -- Called by the agent when a peer disconnects, so their marker doesn't sit
@@ -435,6 +459,17 @@ function ItemSwap_OnPeerLeft(playerId)
     ItemSwap.peerWanted[key] = nil
     ItemSwap.peerArmed[key] = nil
     ItemSwap.peerCarryingCorpse[key] = nil
+    ItemSwap.peerGambling[key] = nil
+    ItemSwap.peerAlchemy[key] = nil
+    ItemSwap.peerSharpening[key] = nil
+    ItemSwap.peerReading[key] = nil
+    ItemSwap.peerTranscribing[key] = nil
+    ItemSwap.peerSmithing[key] = nil
+    ItemSwap.peerSitting[key] = nil
+    ItemSwap.peerLaying[key] = nil
+    ItemSwap.peerHungry[key] = nil
+    ItemSwap.peerExhausted[key] = nil
+    ItemSwap.peerOutOfBreath[key] = nil
     if not rec then return end
     local markerEnt = System.GetEntityByName(rec.markerName)
     if markerEnt then pcall(function() System.RemoveEntity(markerEnt.id) end) end
@@ -523,8 +558,11 @@ function ItemSwap_AnimTickBody()
             -- range is still a useful "someone is over there" signal.
             -- Hide() is only called on an actual state change, not every
             -- tick, since it's a real entity-flag write, not a cheap read.
+            -- While aiming fast travel (Q held), every label is shown
+            -- regardless of distance, so the player can pick a target
+            -- before committing on release - see ItemSwap_TeleportAim*.
             local hidden = false
-            if localPos then
+            if localPos and not ItemSwap.qAiming then
                 local dx, dy, dz = base.x - localPos.x, base.y - localPos.y, base.z - localPos.z
                 hidden = (dx * dx + dy * dy + dz * dz) > maxDistSq
             end
@@ -697,8 +735,22 @@ function ItemSwap_PanelTickBody()
         local wanted = ItemSwap.peerWanted[key]
         local armed = ItemSwap.peerArmed[key]
         local carryingCorpse = ItemSwap.peerCarryingCorpse[key]
+        local gambling = ItemSwap.peerGambling[key]
+        local alchemy = ItemSwap.peerAlchemy[key]
+        local sharpening = ItemSwap.peerSharpening[key]
+        local reading = ItemSwap.peerReading[key]
+        local transcribing = ItemSwap.peerTranscribing[key]
+        local smithing = ItemSwap.peerSmithing[key]
+        local sitting = ItemSwap.peerSitting[key]
+        local laying = ItemSwap.peerLaying[key]
+        local hungry = ItemSwap.peerHungry[key]
+        local exhausted = ItemSwap.peerExhausted[key]
+        local outOfBreath = ItemSwap.peerOutOfBreath[key]
+        local inMinigame = gambling or alchemy or sharpening or reading or transcribing or smithing
+        local inNeed = hungry or exhausted or outOfBreath
         if combat or danger or caught or talking or riding or pickpocketing
-            or unconscious or dead or wanted or armed or carryingCorpse then
+            or unconscious or dead or wanted or armed or carryingCorpse
+            or inMinigame or sitting or laying or inNeed then
             local tags = {}
             if dead then tags[#tags + 1] = "[Dead]" end
             if unconscious then tags[#tags + 1] = "[Unconscious]" end
@@ -706,20 +758,34 @@ function ItemSwap_PanelTickBody()
             if danger then tags[#tags + 1] = "[Danger]" end
             if caught then tags[#tags + 1] = "[Caught]" end
             if wanted then tags[#tags + 1] = "[Wanted]" end
+            if hungry then tags[#tags + 1] = "[Hungry]" end
+            if exhausted then tags[#tags + 1] = "[Exhausted]" end
+            if outOfBreath then tags[#tags + 1] = "[Out of Breath]" end
             if talking then tags[#tags + 1] = "[Talking]" end
             if riding then tags[#tags + 1] = "[Riding]" end
             if pickpocketing then tags[#tags + 1] = "[Pickpocketing]" end
             if armed then tags[#tags + 1] = "[Armed]" end
             if carryingCorpse then tags[#tags + 1] = "[Burying]" end
+            if gambling then tags[#tags + 1] = "[Gambling]" end
+            if alchemy then tags[#tags + 1] = "[Alchemy]" end
+            if sharpening then tags[#tags + 1] = "[Sharpening]" end
+            if reading then tags[#tags + 1] = "[Reading]" end
+            if transcribing then tags[#tags + 1] = "[Transcribing]" end
+            if smithing then tags[#tags + 1] = "[Smithing]" end
+            if sitting then tags[#tags + 1] = "[Sitting]" end
+            if laying then tags[#tags + 1] = "[Laying]" end
             -- Priority, most to least urgent: [Dead] (somber grey - already
             -- happened, alarm doesn't help) > [Unconscious] (deep orange-red,
             -- knocked out) > [Caught] (a pursuer has actually spotted the
             -- peer, harsher red than the general orange/danger tint) >
             -- [Pickpocketing] (own distinct yellow, getting caught
-            -- red-handed ends badly). Everything else not already covered
-            -- by the general orange/danger tint - [Talking], [Riding],
-            -- [Armed], [Burying] alone - gets a calm blue instead of
-            -- the alarming palette, since none of those alone is a warning.
+            -- red-handed ends badly) > Hungry/Exhausted/Out of Breath (a
+            -- muted amber "needs attention" tier - not a threat, but worth
+            -- noticing). Everything else not already covered by the general
+            -- orange/danger tint - [Talking], [Riding], [Armed], [Burying],
+            -- the minigame tags, [Sitting], [Laying] - gets a calm blue
+            -- instead of the alarming palette, since none of those alone is
+            -- a warning.
             local tr, tg, tb = 1, 0.6, 0.2
             if dead then
                 tr, tg, tb = 0.6, 0.6, 0.6
@@ -729,7 +795,10 @@ function ItemSwap_PanelTickBody()
                 tr, tg, tb = 1, 0.15, 0.15
             elseif pickpocketing then
                 tr, tg, tb = 1, 0.9, 0.2
-            elseif (talking or riding or armed or carryingCorpse) and not (combat or danger or wanted) then
+            elseif inNeed and not (combat or danger or wanted) then
+                tr, tg, tb = 0.9, 0.7, 0.3
+            elseif (talking or riding or armed or carryingCorpse or inMinigame or sitting or laying)
+                and not (combat or danger or wanted) then
                 tr, tg, tb = 0.4, 0.8, 1
             end
             ItemSwap_DrawTextOutlined(x, y, table.concat(tags, " "), 2.0, tr, tg, tb)
@@ -740,6 +809,61 @@ function ItemSwap_PanelTickBody()
     end
     if not any then
         ItemSwap_DrawTextOutlined(x, y, "(no peers connected)", 2.4)
+        y = y + hpGap
+    end
+
+    -- Local-only companion status, deliberately never broadcast to peers
+    -- (cached each detect tick in ItemSwap.localDog* - see
+    -- ItemSwap_DetectTickBody) - just this player's own screen.
+    if ItemSwap.localDogFound then
+        y = y + (blockGap - hpGap)
+        local dogDir = ItemSwap_CardinalDirection(ItemSwap.localDogDx or 0, ItemSwap.localDogDz2 or 0)
+        ItemSwap_DrawTextOutlined(x, y, string.format("Mutt - %.0fm %s", ItemSwap.localDogDist or 0, dogDir), 2.4)
+        y = y + hpGap
+        local dogFrac = (ItemSwap.localDogMaxHp and ItemSwap.localDogMaxHp > 0) and (ItemSwap.localDogHp / ItemSwap.localDogMaxHp) or 1
+        local dhr, dhg, dhb
+        if dogFrac > 0.4 then dhr, dhg, dhb = 0.5, 1, 0.5 else dhr, dhg, dhb = 1, 0.5, 0.5 end
+        ItemSwap_DrawTextOutlined(x, y,
+            string.format("HP: %d/%d", math.floor(ItemSwap.localDogHp + 0.5), math.floor(ItemSwap.localDogMaxHp + 0.5)),
+            2.0, dhr, dhg, dhb)
+        y = y + hpGap
+
+        -- Known states (ItemSwap.dogAnimTranslations, filled in live as the
+        -- user confirms what each one actually looks like) show their
+        -- friendly name; anything not yet confirmed falls back to the raw
+        -- GetCurrentAnimationState() string rather than guessing a translation.
+        if ItemSwap.localDogAnim then
+            local friendly = ItemSwap.dogAnimTranslations[ItemSwap.localDogAnim] or ItemSwap.localDogAnim
+            ItemSwap_DrawTextOutlined(x, y, "[" .. friendly .. "]", 2.0, 0.7, 0.7, 0.7)
+            y = y + hpGap
+        end
+
+        -- Same tag priority convention as the peer list: [Dead] > [Unconscious] > [Danger]/[Dueling].
+        -- [Following] is exploratory too - confirmed live to run without
+        -- error, but read false even standing right next to him, so its
+        -- real meaning is still unclear; showing it should clarify that
+        -- over real play rather than guessing.
+        if ItemSwap.localDogDead or ItemSwap.localDogUnconscious or ItemSwap.localDogCombat
+            or ItemSwap.localDogDanger or ItemSwap.localDogFollowing or ItemSwap.localDogCarrying
+            or ItemSwap.localDogDirty then
+            local tags = {}
+            if ItemSwap.localDogDead then tags[#tags + 1] = "[Dead]" end
+            if ItemSwap.localDogUnconscious then tags[#tags + 1] = "[Unconscious]" end
+            if ItemSwap.localDogCombat then tags[#tags + 1] = "[Dueling]" end
+            if ItemSwap.localDogDanger then tags[#tags + 1] = "[Danger]" end
+            if ItemSwap.localDogFollowing then tags[#tags + 1] = "[Following]" end
+            if ItemSwap.localDogCarrying then tags[#tags + 1] = "[Carrying]" end
+            if ItemSwap.localDogDirty then tags[#tags + 1] = "[Dirty]" end
+            local dtr, dtg, dtb = 1, 0.6, 0.2
+            if ItemSwap.localDogDead then
+                dtr, dtg, dtb = 0.6, 0.6, 0.6
+            elseif ItemSwap.localDogUnconscious then
+                dtr, dtg, dtb = 1, 0.4, 0
+            elseif ItemSwap.localDogFollowing and not (ItemSwap.localDogCombat or ItemSwap.localDogDanger) then
+                dtr, dtg, dtb = 0.4, 0.8, 1
+            end
+            ItemSwap_DrawTextOutlined(x, y, table.concat(tags, " "), 2.0, dtr, dtg, dtb)
+        end
     end
 end
 
@@ -824,20 +948,127 @@ function ItemSwap_TeleportToLookedAtPeerBody()
         end
     end
 
+    -- The companion dog is also a valid fast-travel target, same look-cone
+    -- selection as any peer - his cached position is a genuine live
+    -- GetWorldPos() reading (see ItemSwap_DetectTickBody), so it's just as
+    -- safe a teleport destination as a real peer's broadcast position.
+    -- "__dog" is a sentinel key, distinguished from real peer keys (always
+    -- tostring(playerId), i.e. plain digits) below when picking a name.
+    if ItemSwap.localDogFound and ItemSwap.localDogPos then
+        local dp = ItemSwap.localDogPos
+        local dx, dy, dz = dp.x - localPos.x, dp.y - localPos.y, dp.z - localPos.z
+        local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+        if dist > 0 then
+            local dot = (dx / dist) * headDir.x + (dy / dist) * headDir.y + (dz / dist) * headDir.z
+            if dot >= ItemSwap.teleportLookDotThreshold and (not bestDot or dot > bestDot) then
+                bestKey, bestPos, bestDot, bestDist = "__dog", dp, dot, dist
+            end
+        end
+    end
+
     if not bestPos then
-        System.LogAlways("[ITEMSWAP] teleport: not looking at any connected peer")
+        System.LogAlways("[ITEMSWAP] teleport: not looking at any connected peer or the dog")
         return
     end
 
     ItemSwap.lastTeleportClock = now
     ItemSwap.lastTeleportCooldownSec = math.max(ItemSwap.teleportCooldownFloorSec, bestDist / ItemSwap.teleportSpeedMetersPerSec)
     player:SetWorldPos({ x = bestPos.x, y = bestPos.y, z = bestPos.z })
-    local name = ItemSwap.peerNames[bestKey] or ("Player " .. bestKey)
+    local name = (bestKey == "__dog") and "Mutt" or (ItemSwap.peerNames[bestKey] or ("Player " .. bestKey))
     System.LogAlways("[ITEMSWAP] teleported to " .. name .. string.format(" (was %.0fm away, cooldown %.0fs)", bestDist, ItemSwap.lastTeleportCooldownSec))
 end
 
 System.AddCCommand("itemswap_teleport_looked_at", "ItemSwap_TeleportToLookedAtPeer()", "ItemSwap Milestone 8: teleport to the connected peer the player is looking at")
-pcall(function() System.ExecuteCommand("bind q itemswap_teleport_looked_at") end)
+
+-- Toggle-then-confirm, not hold-then-release: confirmed live that neither
+-- a true keyup event nor a reliable repeat-fire-while-held signal exists
+-- for plain console-command binds in this build (the classic CryEngine
+-- "+action"/"-action" press/release convention also confirmed live NOT to
+-- fire the "-" half at all for a custom AddCCommand; a genuine ~1s hold
+-- produced zero repeat-fires either, contradicting an earlier assumption
+-- from Milestone 7 testing that apparently doesn't generalize here). With
+-- no reliable way to detect release, holding Q was never going to work -
+-- so Q now toggles aiming mode instead (first press: show every label
+-- including a short-lived one for the dog, who otherwise has no
+-- world-space presence at all; second press: cancel outright, no
+-- teleport), and E confirms while aiming. Two taps instead of hold+release,
+-- but the same "look around before committing" goal, built entirely on
+-- single-fire-per-press binds, which are the one thing confirmed reliable.
+--
+-- E was already very likely bound to this game's own core "interact" key
+-- before this - the user's own explicit call to take that over anyway for
+-- now, planning to move to different keys later.
+ItemSwap.qAiming = false
+ItemSwap.dogAimLabelName = "ItemSwap_DogAimLabel"
+-- The user's own call: a single Q press shouldn't enter aiming mode by
+-- itself (guards against an accidental bump); only a second press within
+-- this window counts. Only gates the *start* of aiming - cancelling once
+-- already in it stays a single press, since that wasn't asked to change.
+ItemSwap.lastQPressClock = nil
+ItemSwap.doubleTapWindowSec = 0.4
+
+function ItemSwap_ShowDogAimLabel()
+    if not (ItemSwap.localDogFound and ItemSwap.localDogPos) then return end
+    local labelPos = { x = ItemSwap.localDogPos.x, y = ItemSwap.localDogPos.y, z = ItemSwap.localDogPos.z + ItemSwap.labelHeightOffset }
+    local label = System.GetEntityByName(ItemSwap.dogAimLabelName)
+    if not label then
+        System.SpawnEntity({ class = "Comment", name = ItemSwap.dogAimLabelName, position = labelPos, properties = {
+            Text = "Mutt", fSize = ItemSwap.labelSize, bFixed = true, fMaxDist = 255,
+        } })
+    else
+        pcall(function() label:SetWorldPos(labelPos) end)
+    end
+end
+
+function ItemSwap_HideDogAimLabel()
+    local label = System.GetEntityByName(ItemSwap.dogAimLabelName)
+    if label then pcall(function() System.RemoveEntity(label.id) end) end
+end
+
+function ItemSwap_TeleportAim()
+    local ok, err = pcall(ItemSwap_TeleportAimBody)
+    if not ok then
+        System.LogAlways("[ITEMSWAP-ERR] TeleportAim threw: " .. tostring(err))
+    end
+end
+
+function ItemSwap_TeleportAimBody()
+    if ItemSwap.qAiming then
+        ItemSwap.qAiming = false
+        ItemSwap_HideDogAimLabel()
+        System.LogAlways("[ITEMSWAP] teleport aim: cancelled")
+        return
+    end
+
+    local now = os.clock()
+    local isDoubleTap = ItemSwap.lastQPressClock and (now - ItemSwap.lastQPressClock) <= ItemSwap.doubleTapWindowSec
+    ItemSwap.lastQPressClock = now
+    if not isDoubleTap then return end  -- first tap - just remember it, don't start aiming yet
+    ItemSwap.lastQPressClock = nil  -- consumed, so a third quick press doesn't chain into anything
+
+    ItemSwap.qAiming = true
+    ItemSwap_ShowDogAimLabel()
+    System.LogAlways("[ITEMSWAP] teleport aim: started - press E to jump, Q to cancel")
+end
+
+function ItemSwap_TeleportConfirm()
+    local ok, err = pcall(ItemSwap_TeleportConfirmBody)
+    if not ok then
+        System.LogAlways("[ITEMSWAP-ERR] TeleportConfirm threw: " .. tostring(err))
+    end
+end
+
+function ItemSwap_TeleportConfirmBody()
+    if not ItemSwap.qAiming then return end  -- E does nothing outside of aiming mode
+    ItemSwap.qAiming = false
+    ItemSwap_HideDogAimLabel()
+    ItemSwap_TeleportToLookedAtPeerBody()
+end
+
+System.AddCCommand("itemswap_teleport_aim", "ItemSwap_TeleportAim()", "ItemSwap: toggle fast-travel aiming mode (shows all labels) - press again to cancel")
+System.AddCCommand("itemswap_teleport_confirm", "ItemSwap_TeleportConfirm()", "ItemSwap: confirm fast travel while aiming")
+pcall(function() System.ExecuteCommand("bind q itemswap_teleport_aim") end)
+pcall(function() System.ExecuteCommand("bind e itemswap_teleport_confirm") end)
 
 -- Always-on top-right countdown while the teleport is on cooldown -
 -- deliberately independent of the F2 panel (should stay visible whether or
@@ -891,6 +1122,25 @@ end
 ItemSwap.detectRunning = false
 ItemSwap.detectIntervalMs = 250
 ItemSwap.dropRadius = 3
+-- Local-only companion dog status (F2 panel) - a fresh scan every detect
+-- tick, not a cached entity reference, so this is purely a "how far away
+-- do we stop looking" radius, not a risk of losing track of him for good:
+-- confirmed live he vanishes from the panel past this radius and reappears
+-- the instant he's back within it. 200m comfortably covers a hunting dog
+-- ranging ahead or behind during normal play.
+ItemSwap.localDogScanRadius = 200
+-- Friendly names for the raw GetCurrentAnimationState() strings the user
+-- has confirmed live so far - anything not in here just falls back to
+-- showing the raw state name as-is, rather than guessing a translation.
+ItemSwap.dogAnimTranslations = {
+    MotionIdle = "Idle",
+    MotionMovement = "Moving",
+    MotionTurn = "Turning",
+    CodeSitting = "Sitting",
+    CodeLying = "Lying Down",
+    Eating = "Eating",
+    CodeIdleVar = "Idle-Sit",
+}
 ItemSwap.seenItemIds = {}     -- entity id -> true, PickableItems already accounted for
 ItemSwap.lastInvCounts = {}   -- item class -> count, as of the previous tick
 
@@ -1126,6 +1376,74 @@ function ItemSwap_GetLocalCombatState()
         (ok10 and armed == true), (ok11 and carryingCorpse == true)
 end
 
+-- Minigame station class -> tag, discovered in the game's own source: every
+-- one of these (DiceInteractor, AlchemyTable, Grindstone, Book/RecipesBook,
+-- TranscriptionTable, Smithery) derives from UsableItem, which carries a
+-- real `.nUserId` field set by the native C_Minigame::Start/Stop to the
+-- using player's raw id - 0 when idle. Confirmed live against an alchemy
+-- table: e.nUserId exactly matched player:GetRawId() while actively using
+-- it. Book and RecipesBook both fold into the same [Reading] tag - visually
+-- there's no reason to distinguish them.
+ItemSwap.minigameClassTags = {
+    DiceInteractor = "gambling",
+    AlchemyTable = "alchemy",
+    Grindstone = "sharpening",
+    Book = "reading",
+    RecipesBook = "reading",
+    TranscriptionTable = "transcribing",
+    Smithery = "smithing",
+}
+ItemSwap.minigameScanRadius = 15  -- meters; these stations are fixed furniture, so "using one" always means being right next to it
+
+-- hunger/exhaust/stamina thresholds for [Hungry]/[Exhausted]/[Out of Breath].
+-- player.soul:GetState('hunger'/'exhaust'/'stamina') is a real, native read
+-- discovered in the game's own FeatureTests (0-100 scale, higher = more
+-- fed/rested; confirmed live: hunger=65.2, exhaust=85.3, stamina=106.3 on a
+-- fine, non-hungry, well-rested player). Stamina isn't capped at 100 (it
+-- scales with skills), so its threshold is a low absolute value rather than
+-- a fraction of max.
+ItemSwap.hungryThreshold = 30
+ItemSwap.exhaustedThreshold = 30
+ItemSwap.outOfBreathThreshold = 20
+
+function ItemSwap_GetLocalExtraState()
+    if not player or not player.soul or not player.player then
+        return false, false, false, false, false, false, false, false, false, false, false
+    end
+
+    local gambling, alchemy, sharpening, reading, transcribing, smithing = false, false, false, false, false, false
+    pcall(function()
+        local rid = player:GetRawId()
+        local ppos = player:GetWorldPos()
+        for _, e in pairs(System.GetEntitiesInSphere(ppos, ItemSwap.minigameScanRadius)) do
+            local ok, cls = pcall(function() return e.class end)
+            local tag = ok and ItemSwap.minigameClassTags[cls]
+            if tag and e.nUserId == rid then
+                if tag == "gambling" then gambling = true
+                elseif tag == "alchemy" then alchemy = true
+                elseif tag == "sharpening" then sharpening = true
+                elseif tag == "reading" then reading = true
+                elseif tag == "transcribing" then transcribing = true
+                elseif tag == "smithing" then smithing = true
+                end
+            end
+        end
+    end)
+
+    local ok1, sitting = pcall(function() return player.player:IsSitting() end)
+    local ok2, laying = pcall(function() return player.player:IsLaying() end)
+    local ok3, hunger = pcall(function() return player.soul:GetState('hunger') end)
+    local ok4, exhaust = pcall(function() return player.soul:GetState('exhaust') end)
+    local ok5, stamina = pcall(function() return player.soul:GetState('stamina') end)
+
+    local hungry = ok3 and type(hunger) == "number" and hunger < ItemSwap.hungryThreshold
+    local exhausted = ok4 and type(exhaust) == "number" and exhaust < ItemSwap.exhaustedThreshold
+    local outOfBreath = ok5 and type(stamina) == "number" and stamina < ItemSwap.outOfBreathThreshold
+
+    return gambling, alchemy, sharpening, reading, transcribing, smithing,
+        (ok1 and sitting == true), (ok2 and laying == true), hungry, exhausted, outOfBreath
+end
+
 function ItemSwap_DetectTick()
     if not ItemSwap.detectRunning then return end
     Script.SetTimer(ItemSwap.detectIntervalMs, ItemSwap_DetectTick)  -- reschedule first: belt-and-braces alongside the pcall below
@@ -1146,6 +1464,43 @@ function ItemSwap_DetectTick()
     end
 end
 
+-- Returns the companion dog's entity table, scanning for it only when
+-- needed rather than on every single tick - the user's own call, once the
+-- object is found there's no reason to pay for a fresh
+-- System.GetEntitiesInSphere scan every 250ms just to find the same dog
+-- again. Cache is verified live before being trusted, not just "nil or
+-- not": confirmed earlier this session (the peer marker entities) that a
+-- save/level reload can destroy the underlying engine object while the
+-- Lua-side reference to it silently keeps pointing at something now
+-- invalid, with no error at the time it went stale - only when something
+-- later tries to actually use it. GetWorldPos() is a cheap way to prove
+-- the cached reference still points at something real before trusting it
+-- for anything else that tick.
+ItemSwap.localDogRef = nil
+
+function ItemSwap_GetDogRef()
+    if ItemSwap.localDogRef then
+        local ok, pos = pcall(function() return ItemSwap.localDogRef:GetWorldPos() end)
+        if ok and pos then
+            return ItemSwap.localDogRef
+        end
+        ItemSwap.localDogRef = nil  -- stale - fall through and rescan
+    end
+
+    if not player then return nil end
+    local ppos = nil
+    pcall(function() ppos = player:GetWorldPos() end)
+    if not ppos then return nil end
+
+    pcall(function()
+        for _, e in pairs(System.GetEntitiesInSphere(ppos, ItemSwap.localDogScanRadius)) do
+            local ok, cls = pcall(function() return e.class end)
+            if ok and cls == "Dog" then ItemSwap.localDogRef = e end
+        end
+    end)
+    return ItemSwap.localDogRef
+end
+
 function ItemSwap_DetectTickBody()
     if not player then return end
     local pos = nil
@@ -1163,10 +1518,69 @@ function ItemSwap_DetectTickBody()
     local curHp, maxHp = ItemSwap_GetLocalPlayerHealth()
     local inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing,
         inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse = ItemSwap_GetLocalCombatState()
-    System.LogAlways(string.format("[ITEMSWAP-EVT] pos %.3f %.3f %.3f %d %.1f %.1f %d %d %d %d %d %d %d %d %d %d %d",
+    local inGambling, inAlchemy, inSharpening, inReading, inTranscribing, inSmithing,
+        isSitting, isLaying, inHungry, inExhausted, inOutOfBreath = ItemSwap_GetLocalExtraState()
+    System.LogAlways(string.format("[ITEMSWAP-EVT] pos %.3f %.3f %.3f %d %.1f %.1f %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
         pos.x, pos.y, pos.z, crouching and 1 or 0, curHp, maxHp, inCombat and 1 or 0, inDanger and 1 or 0, inTense and 1 or 0, inDialog and 1 or 0,
         inRiding and 1 or 0, inPickpocketing and 1 or 0,
-        inUnconscious and 1 or 0, inDead and 1 or 0, inWanted and 1 or 0, inArmed and 1 or 0, inCarryingCorpse and 1 or 0))
+        inUnconscious and 1 or 0, inDead and 1 or 0, inWanted and 1 or 0, inArmed and 1 or 0, inCarryingCorpse and 1 or 0,
+        inGambling and 1 or 0, inAlchemy and 1 or 0, inSharpening and 1 or 0, inReading and 1 or 0, inTranscribing and 1 or 0, inSmithing and 1 or 0,
+        isSitting and 1 or 0, isLaying and 1 or 0, inHungry and 1 or 0, inExhausted and 1 or 0, inOutOfBreath and 1 or 0))
+
+    -- Deliberately local-only: never logged/broadcast, so peers never see
+    -- this - the F2 panel just reads these cached fields directly on its
+    -- own faster tick. Found by scanning for class=="Dog" rather than by
+    -- name or the __playerDog global, both confirmed live to be dead ends
+    -- for getting a real script object (__playerDog is a raw engine handle
+    -- with no metatable; System.GetEntityByName('Mutt') returned nil).
+    ItemSwap.localDogFound = false
+    pcall(function()
+        local dogEnt = ItemSwap_GetDogRef()
+        if dogEnt then
+            local hp = dogEnt.actor:GetHealth()
+            local maxHp = dogEnt.actor:GetMaxHealth()
+            local dogPos = dogEnt:GetWorldPos()
+            if hp and maxHp and maxHp > 0 and dogPos then
+                local ddx, ddy, ddz = dogPos.x - pos.x, dogPos.y - pos.y, dogPos.z - pos.z
+                ItemSwap.localDogHp = hp
+                ItemSwap.localDogMaxHp = maxHp
+                ItemSwap.localDogDist = math.sqrt(ddx * ddx + ddy * ddy + ddz * ddz)
+                ItemSwap.localDogDx = ddx
+                ItemSwap.localDogDz2 = ddy  -- matches the peer panel's own (dx, dz2) convention for ItemSwap_CardinalDirection
+                ItemSwap.localDogPos = dogPos
+                -- All four confirmed live to work on the dog (same
+                -- basicactor.lua/soul base classes the player uses).
+                local ok1, dead = pcall(function() return dogEnt.actor:IsDead() end)
+                local ok2, unc = pcall(function() return dogEnt.actor:IsUnconscious() end)
+                local ok3, combat = pcall(function() return dogEnt.soul:IsInCombatMode() end)
+                local ok4, danger = pcall(function() return dogEnt.soul:IsInCombatDanger() end)
+                ItemSwap.localDogDead = ok1 and dead == true
+                ItemSwap.localDogUnconscious = ok2 and unc == true
+                ItemSwap.localDogCombat = ok3 and combat == true
+                ItemSwap.localDogDanger = ok4 and danger == true
+
+                -- Both already confirmed live to run without error on the
+                -- dog; exposing them now to actually observe what they do
+                -- during real play (IsFollowing() read false even standing
+                -- right next to him earlier, so its real meaning is still
+                -- unclear - seeing it live over time should clarify that).
+                local ok5, following = pcall(function() return dogEnt.actor:IsFollowing() end)
+                local ok6, anim = pcall(function() return dogEnt.actor:GetCurrentAnimationState() end)
+                ItemSwap.localDogFollowing = ok5 and following == true
+                ItemSwap.localDogAnim = ok6 and anim or nil
+
+                -- Both confirmed live via the game's own source (BasicAnimal.lua,
+                -- WaterTubeActionTrigger.lua): zero-arg HasItemsInInventory, and
+                -- IsBodyMoreDirty taking a dirt-level threshold (0-1).
+                local ok7, carrying = pcall(function() return dogEnt.actor:HasItemsInInventory() end)
+                local ok8, dirty = pcall(function() return dogEnt.actor:IsBodyMoreDirty(0.5) end)
+                ItemSwap.localDogCarrying = ok7 and carrying == true
+                ItemSwap.localDogDirty = ok8 and dirty == true
+
+                ItemSwap.localDogFound = true
+            end
+        end
+    end)
 
     local newCounts = ItemSwap_InventoryCounts()
 

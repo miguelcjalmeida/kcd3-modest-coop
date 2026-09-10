@@ -106,7 +106,18 @@ peerLink.PositionUpdateReceived += async msg =>
         var inWanted = msg.InWanted ? "true" : "false";
         var inArmed = msg.InArmed ? "true" : "false";
         var inCarryingCorpse = msg.InCarryingCorpse ? "true" : "false";
-        await rc.SendLuaAsync($"ItemSwap_OnPeerPosition({msg.PlayerId}, {x}, {y}, {z}, '{escapedName}', {crouching}, {curHp}, {maxHp}, {inCombat}, {inDanger}, {inTense}, {inDialog}, {inRiding}, {inPickpocketing}, {inUnconscious}, {inDead}, {inWanted}, {inArmed}, {inCarryingCorpse})");
+        var inGambling = msg.InGambling ? "true" : "false";
+        var inAlchemy = msg.InAlchemy ? "true" : "false";
+        var inSharpening = msg.InSharpening ? "true" : "false";
+        var inReading = msg.InReading ? "true" : "false";
+        var inTranscribing = msg.InTranscribing ? "true" : "false";
+        var inSmithing = msg.InSmithing ? "true" : "false";
+        var isSitting = msg.IsSitting ? "true" : "false";
+        var isLaying = msg.IsLaying ? "true" : "false";
+        var inHungry = msg.InHungry ? "true" : "false";
+        var inExhausted = msg.InExhausted ? "true" : "false";
+        var inOutOfBreath = msg.InOutOfBreath ? "true" : "false";
+        await rc.SendLuaAsync($"ItemSwap_OnPeerPosition({msg.PlayerId}, {x}, {y}, {z}, '{escapedName}', {crouching}, {curHp}, {maxHp}, {inCombat}, {inDanger}, {inTense}, {inDialog}, {inRiding}, {inPickpocketing}, {inUnconscious}, {inDead}, {inWanted}, {inArmed}, {inCarryingCorpse}, {inGambling}, {inAlchemy}, {inSharpening}, {inReading}, {inTranscribing}, {inSmithing}, {isSitting}, {isLaying}, {inHungry}, {inExhausted}, {inOutOfBreath})");
     }
     catch (Exception ex)
     {
@@ -243,10 +254,12 @@ logTail.LineRead += async line =>
             // pos <x> <y> <z> <crouching> <curHp> <maxHp> <inCombat> <inDanger> -
             // piggybacks the same detect tick. <crouching>/<inCombat>/<inDanger>/
             // <inTense>/<inDialog>/<inRiding>/<inPickpocketing>/<inUnconscious>/
-            // <inDead>/<inWanted>/<inArmed>/<inCarryingCorpse> are "1"/"0";
-            // each trailing field is optional and defaults to "off" rather
-            // than failing the whole match, so an older mod build missing
-            // the newer fields still works.
+            // <inDead>/<inWanted>/<inArmed>/<inCarryingCorpse>/<inGambling>/
+            // <inAlchemy>/<inSharpening>/<inReading>/<inTranscribing>/
+            // <inSmithing>/<isSitting>/<isLaying>/<inHungry>/<inExhausted>/
+            // <inOutOfBreath> are "1"/"0"; each trailing field is optional and
+            // defaults to "off" rather than failing the whole match, so an
+            // older mod build missing the newer fields still works.
             // No console line here either, same reasoning as the receive side.
             case "pos" when parts.Length >= 4
                 && float.TryParse(parts[1], CultureInfo.InvariantCulture, out var px)
@@ -266,7 +279,18 @@ logTail.LineRead += async line =>
                 var pInWanted = parts.Length >= 16 && parts[15] == "1";
                 var pInArmed = parts.Length >= 17 && parts[16] == "1";
                 var pInCarryingCorpse = parts.Length >= 18 && parts[17] == "1";
-                await peerLink.NotifyLocalPositionAsync(px, py, pz, pCrouching, pCurHp, pMaxHp, pInCombat, pInDanger, pInTense, pInDialog, pInRiding, pInPickpocketing, pInUnconscious, pInDead, pInWanted, pInArmed, pInCarryingCorpse);
+                var pInGambling = parts.Length >= 19 && parts[18] == "1";
+                var pInAlchemy = parts.Length >= 20 && parts[19] == "1";
+                var pInSharpening = parts.Length >= 21 && parts[20] == "1";
+                var pInReading = parts.Length >= 22 && parts[21] == "1";
+                var pInTranscribing = parts.Length >= 23 && parts[22] == "1";
+                var pInSmithing = parts.Length >= 24 && parts[23] == "1";
+                var pIsSitting = parts.Length >= 25 && parts[24] == "1";
+                var pIsLaying = parts.Length >= 26 && parts[25] == "1";
+                var pInHungry = parts.Length >= 27 && parts[26] == "1";
+                var pInExhausted = parts.Length >= 28 && parts[27] == "1";
+                var pInOutOfBreath = parts.Length >= 29 && parts[28] == "1";
+                await peerLink.NotifyLocalPositionAsync(px, py, pz, pCrouching, pCurHp, pMaxHp, pInCombat, pInDanger, pInTense, pInDialog, pInRiding, pInPickpocketing, pInUnconscious, pInDead, pInWanted, pInArmed, pInCarryingCorpse, pInGambling, pInAlchemy, pInSharpening, pInReading, pInTranscribing, pInSmithing, pIsSitting, pIsLaying, pInHungry, pInExhausted, pInOutOfBreath);
                 break;
         }
     }
