@@ -430,8 +430,15 @@ _ = Task.Run(async () =>
     {
         try
         {
+            // Checks every independent Script.SetTimer chain, not just the
+            // drop detector - confirmed live that a heavy scene transition
+            // (a real bed sleep) can silently kill the time-skip watcher's
+            // chain alone while detectRunning stays true, so checking only
+            // detectRunning let the watchdog conclude everything was fine
+            // while time-sync stayed dead for the rest of the session.
             await rc.SendLuaAsync(
-                "local ok, armed = pcall(function() return ItemSwap.detectRunning end) " +
+                "local ok, armed = pcall(function() return ItemSwap.detectRunning and ItemSwap.animRunning " +
+                "and ItemSwap.cooldownDisplayRunning and ItemSwap.timeSkipRunning end) " +
                 "System.LogAlways('[ITEMSWAP-ARMCHECK] ' .. tostring(ok and armed == true))");
         }
         catch (Exception ex)
