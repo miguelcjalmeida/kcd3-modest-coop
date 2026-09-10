@@ -1408,7 +1408,7 @@ ItemSwap.minigameClassTags = {
     AnimDoor = "lockpicking",
     Stash = "lockpicking",
 }
-ItemSwap.minigameScanRadius = 15  -- meters; these stations are fixed furniture, so "using one" always means being right next to it
+ItemSwap.minigameScanRadius = 4  -- meters; these stations are fixed furniture, so "using one" always means being right next to it
 
 -- hunger/exhaust/stamina thresholds for [Hungry]/[Exhausted]/[Out of Breath].
 -- player.soul:GetState('hunger'/'exhaust'/'stamina') is a real, native read
@@ -1458,6 +1458,30 @@ function ItemSwap_GetLocalExtraState()
 
     return gambling, alchemy, sharpening, reading, transcribing, smithing,
         (ok1 and sitting == true), (ok2 and laying == true), hungry, exhausted, outOfBreath, lockpicking
+end
+
+-- ItemSwap_GetLocalExtraState's minigame check does a real
+-- System.GetEntitiesInSphere scan every call, unlike every other tag here
+-- (all plain component getters on an already-held reference - negligible
+-- cost regardless of rate). None of these states change fast enough to
+-- need the same 250ms cadence as position/combat anyway - nobody needs
+-- their hunger status updated 4 times a second - so this wrapper only
+-- actually recomputes once every extraStateIntervalSec, caching the result
+-- in between. DetectTickBody calls this every tick but gets a fresh scan
+-- only on every ~4th one at the default intervals.
+ItemSwap.extraStateIntervalSec = 2.0
+ItemSwap.lastExtraStateCheck = 0
+ItemSwap.cachedExtraState = { false, false, false, false, false, false, false, false, false, false, false, false }
+
+function ItemSwap_GetLocalExtraStateThrottled()
+    local now = os.clock()
+    if now - ItemSwap.lastExtraStateCheck >= ItemSwap.extraStateIntervalSec then
+        ItemSwap.lastExtraStateCheck = now
+        local a, b, c, d, e, f, g, h, i, j, k, l = ItemSwap_GetLocalExtraState()
+        ItemSwap.cachedExtraState = { a, b, c, d, e, f, g, h, i, j, k, l }
+    end
+    local s = ItemSwap.cachedExtraState
+    return s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9], s[10], s[11], s[12]
 end
 
 function ItemSwap_DetectTick()
@@ -1535,7 +1559,7 @@ function ItemSwap_DetectTickBody()
     local inCombat, inDanger, inTense, inDialog, inRiding, inPickpocketing,
         inUnconscious, inDead, inWanted, inArmed, inCarryingCorpse = ItemSwap_GetLocalCombatState()
     local inGambling, inAlchemy, inSharpening, inReading, inTranscribing, inSmithing,
-        isSitting, isLaying, inHungry, inExhausted, inOutOfBreath, inLockpicking = ItemSwap_GetLocalExtraState()
+        isSitting, isLaying, inHungry, inExhausted, inOutOfBreath, inLockpicking = ItemSwap_GetLocalExtraStateThrottled()
     System.LogAlways(string.format("[ITEMSWAP-EVT] pos %.3f %.3f %.3f %d %.1f %.1f %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
         pos.x, pos.y, pos.z, crouching and 1 or 0, curHp, maxHp, inCombat and 1 or 0, inDanger and 1 or 0, inTense and 1 or 0, inDialog and 1 or 0,
         inRiding and 1 or 0, inPickpocketing and 1 or 0,
