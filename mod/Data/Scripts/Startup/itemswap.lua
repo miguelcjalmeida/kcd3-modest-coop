@@ -513,11 +513,13 @@ end
 -- Milestone 10: time-skip sync. Called by the agent whenever any player
 -- (including possibly this one, relayed back through the host - though the
 -- host never re-sends to the original sender, so that shouldn't happen in
--- practice) finishes an in-game time skip, answers this player's own "what
--- time is it?" request on arm, or is the asker whose own embedded time an
--- arm request is carrying (see ItemSwap_StartOnPart) - all three cases
--- reduce to the exact same thing: "here's a world time, apply it if it's
--- useful":
+-- practice) finishes a genuine in-game time skip, OR answers this player's
+-- own "what time is it?" request on arm - both reduce to the same thing,
+-- "here's a world time, adopt it wholesale if it's useful", since a player
+-- who just armed accepting the group's exact time of day is the whole
+-- point (unlike ItemSwap_OnPeerTimeSyncRequest below, which is for the
+-- OTHER direction - an already-connected peer merely learning the asker's
+-- time - and deliberately does NOT adopt it wholesale):
 --   #ItemSwap_OnPeerTimeSkip(<playerId>, "<name>", <newWorldTime>)
 --
 -- No arbitration needed over multiple replies arriving for the same
@@ -551,6 +553,47 @@ function ItemSwap_OnPeerTimeSkipBody(playerId, name, newWorldTime)
     ItemSwap.lastWorldTime = newWorldTime
     ItemSwap.timeSkipInProgress = false
     System.LogAlways("[ITEMSWAP] " .. tostring(name) .. " skipped time forward - matched locally")
+end
+
+-- Sync-on-arm asymmetry, per the user's own design: the player ARMING
+-- adopts the group's current time of day wholesale (via
+-- ItemSwap_OnPeerTimeSkip above, same path as a genuine organic skip) -
+-- it's reasonable for someone just joining/reconnecting to snap into
+-- whatever time everyone else is already living in. But an
+-- ALREADY-CONNECTED peer who merely learns the asker's time (because the
+-- asker's own arm request carries it - see ItemSwap_StartOnPart) should
+-- never have their PERCEIVED time of day change just because someone else
+-- joined: e.g. it's 20:00 for me, a friend joins at 10:00 on a save that's
+-- progressed to a later day overall (their raw world time is numerically
+-- bigger), and I should NOT suddenly find myself at 10:00 too. Only my
+-- underlying day-count may advance - in whole 24h steps, so
+-- myWorldTime % 86400 (my own hour of day) is mathematically unchanged -
+-- just enough to stay caught up with whoever is furthest ahead overall.
+--   #ItemSwap_OnPeerTimeSyncRequest(<playerId>, "<name>", <theirWorldTime>)
+function ItemSwap_OnPeerTimeSyncRequest(playerId, name, theirWorldTime)
+    local ok, err = pcall(ItemSwap_OnPeerTimeSyncRequestBody, playerId, name, theirWorldTime)
+    if not ok then
+        System.LogAlways("[ITEMSWAP-ERR] OnPeerTimeSyncRequest threw: " .. tostring(err))
+    end
+end
+
+function ItemSwap_OnPeerTimeSyncRequestBody(playerId, name, theirWorldTime)
+    theirWorldTime = tonumber(theirWorldTime)
+    if not theirWorldTime then return end
+
+    local curOk, myWorldTime = pcall(function() return Calendar.GetWorldTime() end)
+    if not (curOk and type(myWorldTime) == "number") then return end
+    if theirWorldTime <= myWorldTime then return end  -- we're already at least as far along - nothing to do
+
+    local daySeconds = 86400
+    local daysNeeded = math.ceil((theirWorldTime - myWorldTime) / daySeconds)
+    local newWorldTime = myWorldTime + daysNeeded * daySeconds
+
+    Calendar.SetWorldTime(newWorldTime)
+    ItemSwap.lastWorldTime = newWorldTime
+    ItemSwap.timeSkipInProgress = false
+    System.LogAlways("[ITEMSWAP] caught up " .. daysNeeded .. " day(s) to stay in sync with "
+        .. tostring(name) .. " joining - our own time of day is unchanged")
 end
 
 -- ===== Milestone 3: marker idle animation =====

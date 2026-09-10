@@ -161,18 +161,20 @@ peerLink.TimeSyncRequestReceived += async msg =>
 {
     // Fires for host and joiner alike (PeerLink relays this to every
     // connected player, like ItemDrop). Two things happen: (1) this
-    // player's own game tries applying the asker's embedded time right
-    // now, in case the ASKER turns out to be the one who's ahead -
-    // reusing ItemSwap_OnPeerTimeSkip is safe and correct here since it's
-    // the same "apply if ahead, otherwise no-op" logic either way; (2)
-    // this agent queries its own game for its current time to answer with
-    // - that reply comes back via the [ITEMSWAP-TIMESYNC] log-tail branch
-    // above, not synchronously here, since RC has no inbound value-return
-    // channel.
+    // player's own game applies the asker's embedded time via
+    // ItemSwap_OnPeerTimeSyncRequest, NOT the wholesale
+    // ItemSwap_OnPeerTimeSkip - this agent didn't just arm, it's an
+    // already-connected peer merely being told the asker's time, so its
+    // own perceived time of day must never change, only its underlying
+    // day-count may catch up (see that Lua function's own doc comment for
+    // why); (2) this agent queries its own game for its current time to
+    // answer with - that reply comes back via the [ITEMSWAP-TIMESYNC]
+    // log-tail branch above, not synchronously here, since RC has no
+    // inbound value-return channel.
     var fromName = playerNames.TryGetValue(msg.FromPlayerId, out var n) ? n : $"Player {msg.FromPlayerId}";
     var fromWorldTime = msg.FromWorldTime.ToString(CultureInfo.InvariantCulture);
     Console.WriteLine($"[agent] time sync requested by {fromName}: theirWorldTime={fromWorldTime}");
-    try { await rc.SendLuaAsync($"ItemSwap_OnPeerTimeSkip({msg.FromPlayerId}, '{fromName.Replace("'", "\\'")}', {fromWorldTime})"); }
+    try { await rc.SendLuaAsync($"ItemSwap_OnPeerTimeSyncRequest({msg.FromPlayerId}, '{fromName.Replace("'", "\\'")}', {fromWorldTime})"); }
     catch (Exception ex) { Console.WriteLine($"[agent] failed to apply asker's time: {ex.Message}"); }
     try { await rc.SendLuaAsync("System.LogAlways('[ITEMSWAP-TIMESYNC] ' .. tostring(Calendar.GetWorldTime()))"); }
     catch (Exception ex) { Console.WriteLine($"[agent] failed to query time for sync reply: {ex.Message}"); }
