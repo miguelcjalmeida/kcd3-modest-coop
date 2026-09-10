@@ -518,7 +518,7 @@ end
 -- Force-applies it via Calendar.SetWorldTime() - the same function
 -- TimeUtils.ForwardTime (the game's own helper) uses internally, confirmed
 -- live. Critically, updates ItemSwap.lastWorldTime immediately to the new
--- value so the very next DetectTickBody tick doesn't see this externally-
+-- value so the very next ItemSwap_TimeSkipTickBody tick doesn't see this externally-
 -- applied jump as a local skip and re-broadcast it right back out.
 function ItemSwap_OnPeerTimeSkip(playerId, name, newWorldTime)
     local ok, err = pcall(ItemSwap_OnPeerTimeSkipBody, playerId, name, newWorldTime)
@@ -1548,20 +1548,64 @@ function ItemSwap_GetLocalExtraStateThrottled()
     return s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9], s[10], s[11], s[12], s[13]
 end
 
--- Milestone 10: time-skip detection. Confirmed live by directly polling
--- Calendar.GetWorldTime() every 0.5s across a real in-game "skip time" dial
--- confirmation: normal flow is ~17 seconds of game-time per half-second
--- tick (1x speed), but an actual skip ramps in big, constant-sized jumps
--- (~3865/tick observed, i.e. ~64 real-world-minutes of game-time per
--- half-second) for a couple of ticks, decelerates for one tick, then
--- settles back to the normal baseline - the whole thing takes a couple of
--- real seconds, never an instant jump. This runs on the full 250ms
--- DetectTickBody cadence (not the throttled extra-state group) because the
--- whole ramp-and-settle pattern only spans a few ticks total - a slower
--- poll could miss it or misread a mid-ramp value as final.
+-- Milestone 10: time-skip detection, on its own independent 1s watcher -
+-- deliberately NOT piggybacked on the 250ms DetectTickBody chain. A manual
+-- TimeUtils.ForwardTime() call showed a clean, fast ramp-then-settle
+-- pattern (~3865 game-seconds per 250ms tick) that the original 250ms
+-- version caught fine, but a real in-game "skip time" dial confirmation
+-- (confirmed live, same session) did NOT trip that version at all - the
+-- transition likely stalls or throttles the 250ms chain's effective tick
+-- rate (this codebase has already established elsewhere that certain
+-- transitions can silently disrupt a Script.SetTimer chain), so ticks
+-- during the real dial's transition can't be trusted to land every 250ms.
+-- A coarser but independent 1s poll is more robust precisely because nothing
+-- else depends on its exact cadence. 60 seconds/tick as the threshold: 1x-
+-- speed baseline flow is ~34 seconds per real second, so 60 gives comfortable
+-- margin above that while still being trivially crossed by a real skip
+-- (which dumps thousands of seconds at once).
+ItemSwap.timeSkipIntervalMs = 1000
+ItemSwap.timeSkipRunning = false
 ItemSwap.lastWorldTime = nil
 ItemSwap.timeSkipInProgress = false
-ItemSwap.timeSkipDeltaThreshold = 100  -- seconds/tick; normal flow is ~17-35, a real skip is in the thousands
+ItemSwap.timeSkipDeltaThreshold = 60  -- seconds/tick at this 1s cadence
+
+function ItemSwap_TimeSkipOn()
+    if ItemSwap.timeSkipRunning then return end
+    ItemSwap.timeSkipRunning = true
+    System.LogAlways("[ITEMSWAP] time-skip watcher ON (interval=" .. ItemSwap.timeSkipIntervalMs .. "ms)")
+    Script.SetTimer(ItemSwap.timeSkipIntervalMs, ItemSwap_TimeSkipTick)
+end
+
+function ItemSwap_TimeSkipOff()
+    ItemSwap.timeSkipRunning = false
+    System.LogAlways("[ITEMSWAP] time-skip watcher OFF")
+end
+
+function ItemSwap_TimeSkipTick()
+    if not ItemSwap.timeSkipRunning then return end
+    Script.SetTimer(ItemSwap.timeSkipIntervalMs, ItemSwap_TimeSkipTick)
+
+    local ok, tickErr = pcall(ItemSwap_TimeSkipTickBody)
+    if not ok then
+        System.LogAlways("[ITEMSWAP-ERR] TimeSkipTick failed (loop kept alive): " .. tostring(tickErr))
+    end
+end
+
+function ItemSwap_TimeSkipTickBody()
+    local wtOk, wt = pcall(function() return Calendar.GetWorldTime() end)
+    if not (wtOk and type(wt) == "number") then return end
+
+    if ItemSwap.lastWorldTime then
+        local delta = wt - ItemSwap.lastWorldTime
+        if delta > ItemSwap.timeSkipDeltaThreshold then
+            ItemSwap.timeSkipInProgress = true
+        elseif ItemSwap.timeSkipInProgress then
+            ItemSwap.timeSkipInProgress = false
+            System.LogAlways(string.format("[ITEMSWAP-EVT] timeskip %.3f", wt))
+        end
+    end
+    ItemSwap.lastWorldTime = wt
+end
 
 function ItemSwap_DetectTick()
     if not ItemSwap.detectRunning then return end
@@ -1625,27 +1669,6 @@ function ItemSwap_DetectTickBody()
     local pos = nil
     pcall(function() pos = player:GetWorldPos() end)
     if not pos then return end
-
-    -- Time-skip detection (see the comment above ItemSwap_DetectTick for
-    -- the confirmed-live ramp/settle pattern this looks for). Only ever
-    -- reports OUR OWN skip, not one a peer already applied to us - see
-    -- ItemSwap_OnPeerTimeSkipBody, which pre-updates lastWorldTime for
-    -- exactly that reason (otherwise the peer's own SetWorldTime call would
-    -- look identical to a local skip on the very next tick and re-broadcast
-    -- right back out - an echo loop).
-    local wtOk, wt = pcall(function() return Calendar.GetWorldTime() end)
-    if wtOk and type(wt) == "number" then
-        if ItemSwap.lastWorldTime then
-            local delta = wt - ItemSwap.lastWorldTime
-            if delta > ItemSwap.timeSkipDeltaThreshold then
-                ItemSwap.timeSkipInProgress = true
-            elseif ItemSwap.timeSkipInProgress then
-                ItemSwap.timeSkipInProgress = false
-                System.LogAlways(string.format("[ITEMSWAP-EVT] timeskip %.3f", wt))
-            end
-        end
-        ItemSwap.lastWorldTime = wt
-    end
 
     -- Milestone 2: piggyback the same tick for a low-rate position
     -- broadcast (4Hz at the default 250ms interval) - deliberately not a
@@ -1850,6 +1873,7 @@ function ItemSwap_Start()
     ItemSwap_DetectOff()
     ItemSwap_AnimOff()
     ItemSwap_CooldownDisplayOff()
+    ItemSwap_TimeSkipOff()
     System.LogAlways("[ITEMSWAP] itemswap_start: stopped everything, rearming in 1.5s")
     Script.SetTimer(1500, ItemSwap_StartOnPart)
 end
@@ -1858,6 +1882,7 @@ function ItemSwap_StartOnPart()
     ItemSwap_DetectOn()
     ItemSwap_AnimOn()
     ItemSwap_CooldownDisplayOn()
+    ItemSwap_TimeSkipOn()
     System.LogAlways("[ITEMSWAP] itemswap_start: rearmed")
 end
 
