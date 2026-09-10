@@ -510,6 +510,32 @@ function ItemSwap_OnPeerWeatherBody(rainIntensity)
     EnvironmentModule.RebuildClouds()
 end
 
+-- Milestone 10: time-skip sync. Called by the agent whenever any player
+-- (including possibly this one, relayed back through the host - though the
+-- host never re-sends to the original sender, so that shouldn't happen in
+-- practice) finishes an in-game time skip:
+--   #ItemSwap_OnPeerTimeSkip(<playerId>, "<name>", <newWorldTime>)
+-- Force-applies it via Calendar.SetWorldTime() - the same function
+-- TimeUtils.ForwardTime (the game's own helper) uses internally, confirmed
+-- live. Critically, updates ItemSwap.lastWorldTime immediately to the new
+-- value so the very next DetectTickBody tick doesn't see this externally-
+-- applied jump as a local skip and re-broadcast it right back out.
+function ItemSwap_OnPeerTimeSkip(playerId, name, newWorldTime)
+    local ok, err = pcall(ItemSwap_OnPeerTimeSkipBody, playerId, name, newWorldTime)
+    if not ok then
+        System.LogAlways("[ITEMSWAP-ERR] OnPeerTimeSkip threw: " .. tostring(err))
+    end
+end
+
+function ItemSwap_OnPeerTimeSkipBody(playerId, name, newWorldTime)
+    newWorldTime = tonumber(newWorldTime)
+    if not newWorldTime then return end
+    Calendar.SetWorldTime(newWorldTime)
+    ItemSwap.lastWorldTime = newWorldTime
+    ItemSwap.timeSkipInProgress = false
+    System.LogAlways("[ITEMSWAP] " .. tostring(name) .. " skipped time forward - matched locally")
+end
+
 -- ===== Milestone 3: marker idle animation =====
 -- A gentle, continuous up/down bob on every peer marker+label, independent
 -- of position updates: this loop is the ONLY thing that ever calls
@@ -1522,6 +1548,21 @@ function ItemSwap_GetLocalExtraStateThrottled()
     return s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9], s[10], s[11], s[12], s[13]
 end
 
+-- Milestone 10: time-skip detection. Confirmed live by directly polling
+-- Calendar.GetWorldTime() every 0.5s across a real in-game "skip time" dial
+-- confirmation: normal flow is ~17 seconds of game-time per half-second
+-- tick (1x speed), but an actual skip ramps in big, constant-sized jumps
+-- (~3865/tick observed, i.e. ~64 real-world-minutes of game-time per
+-- half-second) for a couple of ticks, decelerates for one tick, then
+-- settles back to the normal baseline - the whole thing takes a couple of
+-- real seconds, never an instant jump. This runs on the full 250ms
+-- DetectTickBody cadence (not the throttled extra-state group) because the
+-- whole ramp-and-settle pattern only spans a few ticks total - a slower
+-- poll could miss it or misread a mid-ramp value as final.
+ItemSwap.lastWorldTime = nil
+ItemSwap.timeSkipInProgress = false
+ItemSwap.timeSkipDeltaThreshold = 100  -- seconds/tick; normal flow is ~17-35, a real skip is in the thousands
+
 function ItemSwap_DetectTick()
     if not ItemSwap.detectRunning then return end
     Script.SetTimer(ItemSwap.detectIntervalMs, ItemSwap_DetectTick)  -- reschedule first: belt-and-braces alongside the pcall below
@@ -1584,6 +1625,27 @@ function ItemSwap_DetectTickBody()
     local pos = nil
     pcall(function() pos = player:GetWorldPos() end)
     if not pos then return end
+
+    -- Time-skip detection (see the comment above ItemSwap_DetectTick for
+    -- the confirmed-live ramp/settle pattern this looks for). Only ever
+    -- reports OUR OWN skip, not one a peer already applied to us - see
+    -- ItemSwap_OnPeerTimeSkipBody, which pre-updates lastWorldTime for
+    -- exactly that reason (otherwise the peer's own SetWorldTime call would
+    -- look identical to a local skip on the very next tick and re-broadcast
+    -- right back out - an echo loop).
+    local wtOk, wt = pcall(function() return Calendar.GetWorldTime() end)
+    if wtOk and type(wt) == "number" then
+        if ItemSwap.lastWorldTime then
+            local delta = wt - ItemSwap.lastWorldTime
+            if delta > ItemSwap.timeSkipDeltaThreshold then
+                ItemSwap.timeSkipInProgress = true
+            elseif ItemSwap.timeSkipInProgress then
+                ItemSwap.timeSkipInProgress = false
+                System.LogAlways(string.format("[ITEMSWAP-EVT] timeskip %.3f", wt))
+            end
+        end
+        ItemSwap.lastWorldTime = wt
+    end
 
     -- Milestone 2: piggyback the same tick for a low-rate position
     -- broadcast (4Hz at the default 250ms interval) - deliberately not a

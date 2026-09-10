@@ -60,6 +60,8 @@ public sealed class PeerLink : IAsyncDisposable
     public event Action<PositionUpdateMessage>? PositionUpdateReceived;
     /// <summary>The host's weather changed - a joiner's local game should force-match it.</summary>
     public event Action<WeatherUpdateMessage>? WeatherUpdateReceived;
+    /// <summary>A player (any player) just finished an in-game time skip - every other player's local game should force-match it.</summary>
+    public event Action<TimeSkipMessage>? TimeSkipReceived;
 
     private sealed class ConnectedPeer
     {
@@ -189,6 +191,13 @@ public sealed class PeerLink : IAsyncDisposable
                             await BroadcastAsync(Protocol.Encode(msg), excludePlayerId: peer.PlayerId).ConfigureAwait(false);
                             break;
                         }
+                    case MessageType.TimeSkip:
+                        {
+                            var msg = Protocol.DecodeTimeSkip(frame.Value.Payload);
+                            TimeSkipReceived?.Invoke(msg);
+                            await BroadcastAsync(Protocol.Encode(msg), excludePlayerId: peer.PlayerId).ConfigureAwait(false);
+                            break;
+                        }
                     case MessageType.Heartbeat:
                         break;
                     case MessageType.Disconnect:
@@ -309,6 +318,9 @@ public sealed class PeerLink : IAsyncDisposable
                     case MessageType.WeatherUpdate:
                         WeatherUpdateReceived?.Invoke(Protocol.DecodeWeatherUpdate(frame.Value.Payload));
                         break;
+                    case MessageType.TimeSkip:
+                        TimeSkipReceived?.Invoke(Protocol.DecodeTimeSkip(frame.Value.Payload));
+                        break;
                     case MessageType.Heartbeat:
                         break;
                     case MessageType.Disconnect:
@@ -359,6 +371,22 @@ public sealed class PeerLink : IAsyncDisposable
     {
         if (!_isHost) return;
         await BroadcastAsync(Protocol.Encode(new WeatherUpdateMessage(rainIntensity))).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Call when THIS player's own game just finished an in-game time skip
+    /// (detected as a big Calendar.GetWorldTime() delta settling back to
+    /// baseline). Relayed like NotifyLocalDropAsync - any player can be the
+    /// origin, the host both relays it and applies it to its own game.
+    /// </summary>
+    public async Task NotifyLocalTimeSkipAsync(double newWorldTime)
+    {
+        var msg = new TimeSkipMessage(LocalPlayerId, newWorldTime);
+
+        if (_isHost)
+            await BroadcastAsync(Protocol.Encode(msg)).ConfigureAwait(false);
+        else
+            await SendAsync(_hostConnection!, Protocol.Encode(msg)).ConfigureAwait(false);
     }
 
     /// <summary>Call when THIS player physically picks up a tracked drop (local or a peer's).</summary>

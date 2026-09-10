@@ -145,6 +145,18 @@ peerLink.WeatherUpdateReceived += async msg =>
     catch (Exception ex) { Console.WriteLine($"[agent] failed to apply weather update: {ex.Message}"); }
 };
 
+peerLink.TimeSkipReceived += async msg =>
+{
+    // Unlike weather, any player can be the origin - the host both applies
+    // this to its own game (fired here too when relaying) and forwards it
+    // to everyone else.
+    var name = playerNames.TryGetValue(msg.FromPlayerId, out var n) ? n : $"Player {msg.FromPlayerId}";
+    var newWorldTime = msg.NewWorldTime.ToString(CultureInfo.InvariantCulture);
+    Console.WriteLine($"[agent] time skip from {name}: newWorldTime={newWorldTime}");
+    try { await rc.SendLuaAsync($"ItemSwap_OnPeerTimeSkip({msg.FromPlayerId}, '{name.Replace("'", "\\'")}', {newWorldTime})"); }
+    catch (Exception ex) { Console.WriteLine($"[agent] failed to apply time skip: {ex.Message}"); }
+};
+
 peerLink.ItemClaimResolved += async msg =>
 {
     // The Lua side doesn't know its own network player id (that's assigned
@@ -269,6 +281,14 @@ logTail.LineRead += async line =>
             case "claim" when parts.Length >= 2 && uint.TryParse(parts[1], out var claimDropId):
                 Console.WriteLine($"[agent] local claim on dropId={claimDropId}");
                 await peerLink.NotifyLocalClaimAsync(claimDropId);
+                break;
+
+            // timeskip <newWorldTime> - Lua detected the local game's
+            // Calendar.GetWorldTime() ramp-then-settle pattern that means
+            // the in-game "skip time" dial just finished.
+            case "timeskip" when parts.Length >= 2 && double.TryParse(parts[1], CultureInfo.InvariantCulture, out var newWorldTime):
+                Console.WriteLine($"[agent] local time skip detected: newWorldTime={newWorldTime}");
+                await peerLink.NotifyLocalTimeSkipAsync(newWorldTime);
                 break;
 
             // pos <x> <y> <z> <crouching> <curHp> <maxHp> <inCombat> <inDanger> -

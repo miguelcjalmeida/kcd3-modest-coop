@@ -19,6 +19,7 @@ if (args.Length < 3)
     Console.WriteLine("  claim <dropId>                            - simulate this fake player picking up a tracked drop");
     Console.WriteLine("  pos <x> <y> <z> [crouching] [curHp] [maxHp] [inCombat] [inDanger] [inTense] [inDialog] [inRiding] [inPickpocketing] [inUnconscious] [inDead] [inWanted] [inArmed] [inCarryingCorpse] [inGambling] [inAlchemy] [inSharpening] [inReading] [inTranscribing] [inSmithing] [isSitting] [isLaying] [inHungry] [inExhausted] [inOutOfBreath] [inLockpicking]  - simulate this fake player's position (bool fields: 1/true; HP optional, defaults to unknown)");
     Console.WriteLine("  weather <rainIntensity>                   - host mode only: push a weather change to everyone connected (0-1)");
+    Console.WriteLine("  timeskip <newWorldTime>                   - simulate this fake player finishing an in-game time skip (Calendar.GetWorldTime() seconds)");
     Console.WriteLine("  quit");
     return 1;
 }
@@ -57,6 +58,8 @@ link.PositionUpdateReceived += m => Console.WriteLine(
     $"[peer] position update: playerId={m.PlayerId} pos={m.X:F2},{m.Y:F2},{m.Z:F2}");
 link.WeatherUpdateReceived += m => Console.WriteLine(
     $"[peer] weather update: rainIntensity={m.RainIntensity:F3}");
+link.TimeSkipReceived += m => Console.WriteLine(
+    $"[peer] time skip: fromPlayerId={m.FromPlayerId} newWorldTime={m.NewWorldTime}");
 
 Console.WriteLine("[peer] ready. Commands: drop <classGuid> <amount> <health> | claim <dropId> | quit");
 while (true)
@@ -141,6 +144,12 @@ while (true)
             Console.WriteLine(link.IsHost
                 ? $"[peer] broadcast weather rainIntensity={rain}"
                 : "[peer] not the host - weather command had no effect");
+        }
+        else if (parts[0] == "timeskip" && parts.Length >= 2)
+        {
+            var newWorldTime = double.Parse(parts[1], CultureInfo.InvariantCulture);
+            await link.NotifyLocalTimeSkipAsync(newWorldTime);
+            Console.WriteLine($"[peer] sent time skip newWorldTime={newWorldTime}");
         }
         else
         {

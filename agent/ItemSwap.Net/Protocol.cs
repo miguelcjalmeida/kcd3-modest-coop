@@ -28,6 +28,7 @@ public enum MessageType : byte
     Disconnect = 0x09,
     PositionUpdate = 0x0A,
     WeatherUpdate = 0x0B,
+    TimeSkip = 0x0C,
 }
 
 public sealed record HelloMessage(byte ProtocolVersion, string Name, byte[] SecretHash);
@@ -63,6 +64,19 @@ public sealed record ItemClaimResolvedMessage(uint DropId, byte WinnerPlayerId);
 /// `wh_env_RainIntensityOverride = RainIntensity` + RebuildClouds().
 /// </summary>
 public sealed record WeatherUpdateMessage(float RainIntensity);
+
+/// <summary>
+/// Any player (host or joiner) can trigger this - unlike weather, there's
+/// no single natural source of truth for time, so whoever's game just
+/// finished the in-game "skip time" dial becomes authoritative for that
+/// moment and everyone else force-matches via Calendar.SetWorldTime().
+/// Relayed peer-to-peer like ItemDrop (host applies it locally too, then
+/// relays to everyone except the original sender) rather than host-only
+/// like weather. NewWorldTime is Calendar.GetWorldTime()'s raw seconds
+/// value (a double - a long enough playthrough could exceed float32's
+/// exact-integer range).
+/// </summary>
+public sealed record TimeSkipMessage(byte FromPlayerId, double NewWorldTime);
 
 /// <summary>
 /// Unlike ItemDropMessage's X/Y/Z, these coordinates ARE meant to be used
@@ -390,4 +404,15 @@ public static class Protocol
 
     public static WeatherUpdateMessage DecodeWeatherUpdate(byte[] payload) =>
         new(BitConverter.ToSingle(payload.AsSpan(0, 4)));
+
+    public static byte[] Encode(TimeSkipMessage m)
+    {
+        var payload = new byte[9];
+        payload[0] = m.FromPlayerId;
+        BitConverter.TryWriteBytes(payload.AsSpan(1, 8), m.NewWorldTime);
+        return EncodeFrame(MessageType.TimeSkip, payload);
+    }
+
+    public static TimeSkipMessage DecodeTimeSkip(byte[] payload) =>
+        new(payload[0], BitConverter.ToDouble(payload.AsSpan(1, 8)));
 }
