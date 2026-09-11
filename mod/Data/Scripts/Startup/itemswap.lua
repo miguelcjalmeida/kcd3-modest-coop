@@ -1724,9 +1724,9 @@ function ItemSwap_DetectTick()
     end
 end
 
--- Returns the companion dog's entity table, scanning for it only when
--- needed rather than on every single tick - the user's own call, once the
--- object is found there's no reason to pay for a fresh
+-- Returns the PLAYER'S OWN companion dog's entity table, scanning for it
+-- only when needed rather than on every single tick - the user's own call,
+-- once the object is found there's no reason to pay for a fresh
 -- System.GetEntitiesInSphere scan every 250ms just to find the same dog
 -- again. Cache is verified live before being trusted, not just "nil or
 -- not": confirmed earlier this session (the peer marker entities) that a
@@ -1736,6 +1736,19 @@ end
 -- later tries to actually use it. GetWorldPos() is a cheap way to prove
 -- the cached reference still points at something real before trusting it
 -- for anything else that tick.
+--
+-- Filtered by identity against the real engine global __playerDog, not
+-- just "the first/last class==Dog entity found nearby" - confirmed live
+-- (a real report) that any wild/village dog wandering within scan range
+-- got picked up instead of the actual companion, showing a random dog's
+-- info under "connected peers" instead of Mutt's. __playerDog is raw
+-- userdata with no metatable (a previous session already confirmed it's a
+-- dead end for calling methods like :GetWorldPos() on directly - THAT part
+-- of the old finding still holds), but it compares fine for identity:
+-- confirmed live, e.id == __playerDog correctly returned false for a
+-- nearby wild dog. The real fix in the game's own behavior-tree AI
+-- (Data/AI/crime/getPlayerCompanionType.xml) uses this exact same
+-- '$entity == $__playerDog' comparison to tell companion from wildlife.
 ItemSwap.localDogRef = nil
 
 function ItemSwap_GetDogRef()
@@ -1755,7 +1768,8 @@ function ItemSwap_GetDogRef()
     pcall(function()
         for _, e in pairs(System.GetEntitiesInSphere(ppos, ItemSwap.localDogScanRadius)) do
             local ok, cls = pcall(function() return e.class end)
-            if ok and cls == "Dog" then ItemSwap.localDogRef = e end
+            local ok2, isMine = pcall(function() return e.id == __playerDog end)
+            if ok and cls == "Dog" and ok2 and isMine then ItemSwap.localDogRef = e end
         end
     end)
     return ItemSwap.localDogRef
