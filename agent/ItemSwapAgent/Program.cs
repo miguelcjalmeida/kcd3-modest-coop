@@ -442,15 +442,25 @@ _ = Task.Run(async () =>
     {
         try
         {
-            // Checks every independent Script.SetTimer chain, not just the
-            // drop detector - confirmed live that a heavy scene transition
-            // (a real bed sleep) can silently kill the time-skip watcher's
-            // chain alone while detectRunning stays true, so checking only
-            // detectRunning let the watchdog conclude everything was fine
-            // while time-sync stayed dead for the rest of the session.
+            // Checks every independent Script.SetTimer chain by actual
+            // liveness (a heartbeat clock each chain updates on every tick),
+            // not just its Running flag. Confirmed live: a real dial time-
+            // skip can make the engine silently stop re-invoking a chain's
+            // scheduled timer altogether, with no Lua error and no change to
+            // the flag - only an explicit Off() call ever clears that flag,
+            // so a chain killed this way reads "running" forever and the
+            // watchdog would never know to rearm it. A staleness check on
+            // the heartbeat is the only way to tell a genuinely dead chain
+            // from a merely idle one. 5s is comfortably above every chain's
+            // own interval (the slowest, time-skip, ticks every 1s).
             await rc.SendLuaAsync(
-                "local ok, armed = pcall(function() return ItemSwap.detectRunning and ItemSwap.animRunning " +
-                "and ItemSwap.cooldownDisplayRunning and ItemSwap.timeSkipRunning end) " +
+                "local ok, armed = pcall(function() " +
+                "local now = os.clock() " +
+                "local function alive(flag, clk) return flag == true and clk ~= nil and (now - clk) < 5 end " +
+                "return alive(ItemSwap.detectRunning, ItemSwap.lastDetectTickClock) " +
+                "and alive(ItemSwap.animRunning, ItemSwap.lastAnimTickClock) " +
+                "and alive(ItemSwap.cooldownDisplayRunning, ItemSwap.lastCooldownDisplayTickClock) " +
+                "and alive(ItemSwap.timeSkipRunning, ItemSwap.lastTimeSkipTickClock) end) " +
                 "System.LogAlways('[ITEMSWAP-ARMCHECK] ' .. tostring(ok and armed == true))");
         }
         catch (Exception ex)

@@ -552,6 +552,10 @@ function ItemSwap_OnPeerTimeSkipBody(playerId, name, newWorldTime)
     Calendar.SetWorldTime(newWorldTime)
     ItemSwap.lastWorldTime = newWorldTime
     ItemSwap.timeSkipInProgress = false
+    -- Clear the sliding-window buffer too - otherwise its next few
+    -- comparisons would span across this externally-applied jump and
+    -- misreport it as our own organic skip.
+    ItemSwap.timeSkipWindowBuf = {}
     System.LogAlways("[ITEMSWAP] " .. tostring(name) .. " skipped time forward - matched locally")
 end
 
@@ -592,6 +596,7 @@ function ItemSwap_OnPeerTimeSyncRequestBody(playerId, name, theirWorldTime)
     Calendar.SetWorldTime(newWorldTime)
     ItemSwap.lastWorldTime = newWorldTime
     ItemSwap.timeSkipInProgress = false
+    ItemSwap.timeSkipWindowBuf = {}
     System.LogAlways("[ITEMSWAP] caught up " .. daysNeeded .. " day(s) to stay in sync with "
         .. tostring(name) .. " joining - our own time of day is unchanged")
 end
@@ -610,8 +615,20 @@ ItemSwap.animAmplitude = 0.084375  -- meters of vertical travel each way - "just
 ItemSwap.animPeriodSec = 2.0     -- seconds for one full up-down-up cycle
 ItemSwap.animStartClock = nil    -- os.clock() reference point captured once in ItemSwap_AnimOn
 
+-- Updated on every tick regardless of the flag or the pcall outcome below -
+-- the watchdog's ARMCHECK checks staleness of this, not just animRunning,
+-- because a heavy scene transition (a dial time-skip, a bed sleep) can make
+-- the engine simply never re-invoke a scheduled Script.SetTimer callback
+-- again, with no Lua error at all - "reschedule first" and pcall both only
+-- guard against a *catchable* failure, and this one isn't. animRunning
+-- alone would stay stuck true forever in that case, since only an explicit
+-- Off() call ever clears it - a clock-based staleness check is the only
+-- way to tell a genuinely dead chain from a merely-idle one.
+ItemSwap.lastAnimTickClock = nil
+
 function ItemSwap_AnimTick()
     if not ItemSwap.animRunning then return end
+    ItemSwap.lastAnimTickClock = os.clock()
     Script.SetTimer(ItemSwap.animIntervalMs, ItemSwap_AnimTick)  -- reschedule first, same reasoning as ItemSwap_DetectTick
     local ok, err = pcall(ItemSwap_AnimTickBody)
     if not ok then
@@ -1212,8 +1229,14 @@ function ItemSwap_CooldownDisplayOff()
     ItemSwap.cooldownDisplayRunning = false
 end
 
+-- See ItemSwap.lastAnimTickClock for why this exists: a staleness check the
+-- watchdog can trust, since cooldownDisplayRunning alone can go stuck true
+-- forever if the engine ever silently stops firing this chain.
+ItemSwap.lastCooldownDisplayTickClock = nil
+
 function ItemSwap_CooldownDisplayTick()
     if not ItemSwap.cooldownDisplayRunning then return end
+    ItemSwap.lastCooldownDisplayTickClock = os.clock()
     Script.SetTimer(ItemSwap.cooldownDisplayIntervalMs, ItemSwap_CooldownDisplayTick)  -- reschedule first, same reasoning as every other timer loop here
     local ok, err = pcall(ItemSwap_CooldownDisplayTickBody)
     if not ok then
@@ -1638,6 +1661,30 @@ ItemSwap.lastWorldTime = nil
 ItemSwap.timeSkipInProgress = false
 ItemSwap.timeSkipDeltaThreshold = 300  -- seconds/tick at this 1s cadence
 
+-- A single-tick threshold, no matter how low, can always be evaded by a
+-- sufficiently gentle-but-sustained ramp - confirmed live: a real multi-hour
+-- dial sleep advanced world time by ~25,800 seconds total, yet no individual
+-- 1s tick ever exceeded timeSkipDeltaThreshold, so nothing above ever fired
+-- despite the game visibly jumping many hours forward. This is a second,
+-- independent check comparing against a snapshot from several ticks ago
+-- instead of just the last one, so a sustained climb still trips detection
+-- even if no single tick along the way looked abnormal on its own.
+--
+-- A sliding window (a small ring buffer, compared every tick), not a
+-- periodically-resetting one - confirmed live that a tumbling window (reset
+-- every N seconds regardless of outcome) can straddle its own reset
+-- boundary and split one continuous ramp into two halves that each
+-- individually stay under threshold, missing it entirely. Sliding avoids
+-- that: every tick compares against exactly N ticks ago, continuously.
+-- 1500 over 10 ticks is ~150/tick average - comfortably above real 1x flow
+-- (confirmed ~15-34 game-sec/real-sec) while still catching a skip spread
+-- thin enough to hide from the faster per-tick check above. The buffer is
+-- cleared after firing so the same already-reported jump doesn't keep
+-- re-triggering every tick until 10 fresh small samples flow through.
+ItemSwap.timeSkipWindowLen = 10
+ItemSwap.timeSkipWindowThreshold = 1500
+ItemSwap.timeSkipWindowBuf = {}
+
 function ItemSwap_TimeSkipOn()
     if ItemSwap.timeSkipRunning then return end
     ItemSwap.timeSkipRunning = true
@@ -1650,8 +1697,17 @@ function ItemSwap_TimeSkipOff()
     System.LogAlways("[ITEMSWAP] time-skip watcher OFF")
 end
 
+-- See ItemSwap.lastAnimTickClock for why this exists - this is the chain
+-- most directly implicated live: a friend's real dial time-skip never
+-- reached anyone else, while timeSkipRunning still read true the whole
+-- time, because the engine had silently stopped firing this exact timer
+-- sometime earlier (very plausibly during a *previous* transition) and
+-- nothing ever noticed since the watchdog only checked the sticky flag.
+ItemSwap.lastTimeSkipTickClock = nil
+
 function ItemSwap_TimeSkipTick()
     if not ItemSwap.timeSkipRunning then return end
+    ItemSwap.lastTimeSkipTickClock = os.clock()
     Script.SetTimer(ItemSwap.timeSkipIntervalMs, ItemSwap_TimeSkipTick)
 
     local ok, tickErr = pcall(ItemSwap_TimeSkipTickBody)
@@ -1664,6 +1720,7 @@ function ItemSwap_TimeSkipTickBody()
     local wtOk, wt = pcall(function() return Calendar.GetWorldTime() end)
     if not (wtOk and type(wt) == "number") then return end
 
+    local alreadyReported = false
     if ItemSwap.lastWorldTime then
         local delta = wt - ItemSwap.lastWorldTime
         if delta > ItemSwap.timeSkipDeltaThreshold then
@@ -1671,13 +1728,37 @@ function ItemSwap_TimeSkipTickBody()
         elseif ItemSwap.timeSkipInProgress then
             ItemSwap.timeSkipInProgress = false
             System.LogAlways(string.format("[ITEMSWAP-EVT] timeskip %.3f", wt))
+            alreadyReported = true
         end
     end
     ItemSwap.lastWorldTime = wt
+
+    -- Second, sliding-window check - see ItemSwap.timeSkipWindowThreshold
+    -- above for why this exists. Independent of the per-tick check, but
+    -- skips reporting if that one just did, to avoid an easy duplicate for
+    -- the same physical skip (a rarer duplicate across the two isn't worth
+    -- fully eliminating - the receiving side already no-ops a redundant
+    -- reapply of an already-caught-up value).
+    table.insert(ItemSwap.timeSkipWindowBuf, wt)
+    while #ItemSwap.timeSkipWindowBuf > ItemSwap.timeSkipWindowLen do
+        table.remove(ItemSwap.timeSkipWindowBuf, 1)
+    end
+    if #ItemSwap.timeSkipWindowBuf == ItemSwap.timeSkipWindowLen then
+        local windowDelta = wt - ItemSwap.timeSkipWindowBuf[1]
+        if windowDelta > ItemSwap.timeSkipWindowThreshold and not alreadyReported then
+            System.LogAlways(string.format("[ITEMSWAP-EVT] timeskip %.3f", wt))
+            ItemSwap.timeSkipWindowBuf = {}
+        end
+    end
 end
+
+-- See ItemSwap.lastAnimTickClock for why this exists - the same staleness
+-- check, for the same reason, on this chain too.
+ItemSwap.lastDetectTickClock = nil
 
 function ItemSwap_DetectTick()
     if not ItemSwap.detectRunning then return end
+    ItemSwap.lastDetectTickClock = os.clock()
     Script.SetTimer(ItemSwap.detectIntervalMs, ItemSwap_DetectTick)  -- reschedule first: belt-and-braces alongside the pcall below
 
     -- The whole body is wrapped in pcall, not just individual risky calls.
