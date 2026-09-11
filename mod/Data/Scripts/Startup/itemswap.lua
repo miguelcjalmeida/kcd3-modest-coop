@@ -1108,23 +1108,27 @@ System.AddCCommand("itemswap_teleport_looked_at", "ItemSwap_TeleportToLookedAtPe
 -- fire the "-" half at all for a custom AddCCommand; a genuine ~1s hold
 -- produced zero repeat-fires either, contradicting an earlier assumption
 -- from Milestone 7 testing that apparently doesn't generalize here). With
--- no reliable way to detect release, holding Q was never going to work -
--- so Q now toggles aiming mode instead (first press: show every label
+-- no reliable way to detect release, holding a key was never going to work -
+-- so Caps Lock now toggles aiming mode instead (first tap: show every label
 -- including a short-lived one for the dog, who otherwise has no
--- world-space presence at all; second press: cancel outright, no
--- teleport), and E confirms while aiming. Two taps instead of hold+release,
--- but the same "look around before committing" goal, built entirely on
--- single-fire-per-press binds, which are the one thing confirmed reliable.
+-- world-space presence at all; a plain single tap while already aiming:
+-- cancel outright, no teleport), and E confirms while aiming. Two taps
+-- instead of hold+release, but the same "look around before committing"
+-- goal, built entirely on single-fire-per-press binds, which are the one
+-- thing confirmed reliable.
 --
 -- E was already very likely bound to this game's own core "interact" key
 -- before this - the user's own explicit call to take that over anyway for
--- now, planning to move to different keys later.
+-- now, planning to move to different keys later. Caps Lock was picked
+-- (over the original Q) specifically because it isn't already bound to
+-- anything else in the base game, so double-tapping it can't collide with
+-- an unrelated action.
 ItemSwap.qAiming = false
 ItemSwap.dogAimLabelName = "ItemSwap_DogAimLabel"
--- The user's own call: a single Q press shouldn't enter aiming mode by
--- itself (guards against an accidental bump); only a second press within
--- this window counts. Only gates the *start* of aiming - cancelling once
--- already in it stays a single press, since that wasn't asked to change.
+-- The user's own call: a single tap shouldn't enter aiming mode by itself
+-- (guards against an accidental bump); only a second tap within this
+-- window counts. Only gates the *start* of aiming - cancelling once
+-- already in it stays a single tap, since that wasn't asked to change.
 ItemSwap.lastQPressClock = nil
 ItemSwap.doubleTapWindowSec = 0.4
 
@@ -1169,7 +1173,7 @@ function ItemSwap_TeleportAimBody()
 
     ItemSwap.qAiming = true
     ItemSwap_ShowDogAimLabel()
-    System.LogAlways("[ITEMSWAP] teleport aim: started - press E to jump, Q to cancel")
+    System.LogAlways("[ITEMSWAP] teleport aim: started - press E to jump, Caps Lock to cancel")
 end
 
 function ItemSwap_TeleportConfirm()
@@ -1188,7 +1192,7 @@ end
 
 System.AddCCommand("itemswap_teleport_aim", "ItemSwap_TeleportAim()", "ItemSwap: toggle fast-travel aiming mode (shows all labels) - press again to cancel")
 System.AddCCommand("itemswap_teleport_confirm", "ItemSwap_TeleportConfirm()", "ItemSwap: confirm fast travel while aiming")
-pcall(function() System.ExecuteCommand("bind q itemswap_teleport_aim") end)
+pcall(function() System.ExecuteCommand("bind capslock itemswap_teleport_aim") end)
 pcall(function() System.ExecuteCommand("bind e itemswap_teleport_confirm") end)
 
 -- Always-on top-right countdown while the teleport is on cooldown -
