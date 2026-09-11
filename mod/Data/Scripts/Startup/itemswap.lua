@@ -530,9 +530,7 @@ end
 -- That means it's always safe to just try applying every value this ever
 -- sees, from anyone, in any order - whoever is genuinely furthest ahead is
 -- exactly what everyone naturally converges on, with no bookkeeping needed
--- on our side at all. lastWorldTime is only touched (and only the log
--- fires) when the apply actually did something, so ItemSwap_TimeSkipTickBody
--- can't mistake a same-or-behind no-op for a local skip either.
+-- on our side at all.
 function ItemSwap_OnPeerTimeSkip(playerId, name, newWorldTime)
     local ok, err = pcall(ItemSwap_OnPeerTimeSkipBody, playerId, name, newWorldTime)
     if not ok then
@@ -550,12 +548,6 @@ function ItemSwap_OnPeerTimeSkipBody(playerId, name, newWorldTime)
     end
 
     Calendar.SetWorldTime(newWorldTime)
-    ItemSwap.lastWorldTime = newWorldTime
-    ItemSwap.timeSkipInProgress = false
-    -- Clear the sliding-window buffer too - otherwise its next few
-    -- comparisons would span across this externally-applied jump and
-    -- misreport it as our own organic skip.
-    ItemSwap.timeSkipWindowBuf = {}
     System.LogAlways("[ITEMSWAP] " .. tostring(name) .. " skipped time forward - matched locally")
 end
 
@@ -594,9 +586,6 @@ function ItemSwap_OnPeerTimeSyncRequestBody(playerId, name, theirWorldTime)
     local newWorldTime = myWorldTime + daysNeeded * daySeconds
 
     Calendar.SetWorldTime(newWorldTime)
-    ItemSwap.lastWorldTime = newWorldTime
-    ItemSwap.timeSkipInProgress = false
-    ItemSwap.timeSkipWindowBuf = {}
     System.LogAlways("[ITEMSWAP] caught up " .. daysNeeded .. " day(s) to stay in sync with "
         .. tostring(name) .. " joining - our own time of day is unchanged")
 end
@@ -1635,55 +1624,37 @@ function ItemSwap_GetLocalExtraStateThrottled()
     return s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9], s[10], s[11], s[12], s[13]
 end
 
--- Milestone 10: time-skip detection, on its own independent 1s watcher -
--- deliberately NOT piggybacked on the 250ms DetectTickBody chain. A manual
--- TimeUtils.ForwardTime() call showed a clean, fast ramp-then-settle
--- pattern (~3865 game-seconds per 250ms tick) that the original 250ms
--- version caught fine, but a real in-game "skip time" dial confirmation
--- (confirmed live, same session) did NOT trip that version at all - the
--- transition likely stalls or throttles the 250ms chain's effective tick
--- rate (this codebase has already established elsewhere that certain
--- transitions can silently disrupt a Script.SetTimer chain), so ticks
--- during the real dial's transition can't be trusted to land every 250ms.
--- A coarser but independent 1s poll is more robust precisely because nothing
--- else depends on its exact cadence. 300 seconds/tick (5 minutes) as the
--- threshold: measured 1x-speed baseline flow is ~34 game-seconds per real
--- second, but that's one session's measurement, not a guaranteed constant -
--- day-length settings, mounts, or other activity could plausibly push it
--- well above that (the user's own worry: what if a real second is ever
--- closer to a full game-minute of flow?). 300 stays a comfortable multiple
--- above even that worse-case guess while remaining trivially crossed by a
--- real skip (which dumps thousands of seconds at once, so detection speed
--- for genuine skips is unaffected either way).
+-- Milestone 10: time-skip sync, on its own independent 1s watcher -
+-- deliberately NOT piggybacked on the 250ms DetectTickBody chain (this
+-- codebase has already established elsewhere that certain transitions can
+-- silently disrupt a Script.SetTimer chain's effective tick rate, so a
+-- coarser, independent chain is more robust regardless of what else is
+-- going on).
+--
+-- This went through two failed detection-threshold designs before landing
+-- here, both confirmed live to miss real skips: a single-tick delta
+-- threshold (any threshold, no matter how low, can be evaded by a
+-- sufficiently gentle-but-sustained ramp - a real multi-hour dial sleep
+-- advanced world time by ~25,800 seconds total with no individual 1s tick
+-- ever looking abnormal), and a sliding-window delta on top of that (still
+-- missed two more real sleeps of different sizes, for reasons that were
+-- never fully pinned down even after directly verifying the window logic
+-- itself was correct in isolation). Rather than keep guessing at exactly
+-- how a real transition ramps, this drops threshold-based detection
+-- entirely: every tick just unconditionally re-announces this player's
+-- own current time, at most once every timeSkipHeartbeatSec. Nobody needs
+-- to correctly detect a "skip event" happened at all - within one
+-- heartbeat interval, everyone converges to whoever is furthest ahead
+-- regardless of how any given skip ramped (confirmed live: a manually
+-- fired announce reached a peer and applied correctly, proving the
+-- broadcast/relay/apply pipeline was never the problem - only "when do we
+-- decide to announce" was). 15s keeps normal play's own periodic
+-- resends cheap while bounding worst-case sync staleness to a small,
+-- known number.
 ItemSwap.timeSkipIntervalMs = 1000
 ItemSwap.timeSkipRunning = false
-ItemSwap.lastWorldTime = nil
-ItemSwap.timeSkipInProgress = false
-ItemSwap.timeSkipDeltaThreshold = 300  -- seconds/tick at this 1s cadence
-
--- A single-tick threshold, no matter how low, can always be evaded by a
--- sufficiently gentle-but-sustained ramp - confirmed live: a real multi-hour
--- dial sleep advanced world time by ~25,800 seconds total, yet no individual
--- 1s tick ever exceeded timeSkipDeltaThreshold, so nothing above ever fired
--- despite the game visibly jumping many hours forward. This is a second,
--- independent check comparing against a snapshot from several ticks ago
--- instead of just the last one, so a sustained climb still trips detection
--- even if no single tick along the way looked abnormal on its own.
---
--- A sliding window (a small ring buffer, compared every tick), not a
--- periodically-resetting one - confirmed live that a tumbling window (reset
--- every N seconds regardless of outcome) can straddle its own reset
--- boundary and split one continuous ramp into two halves that each
--- individually stay under threshold, missing it entirely. Sliding avoids
--- that: every tick compares against exactly N ticks ago, continuously.
--- 1500 over 10 ticks is ~150/tick average - comfortably above real 1x flow
--- (confirmed ~15-34 game-sec/real-sec) while still catching a skip spread
--- thin enough to hide from the faster per-tick check above. The buffer is
--- cleared after firing so the same already-reported jump doesn't keep
--- re-triggering every tick until 10 fresh small samples flow through.
-ItemSwap.timeSkipWindowLen = 10
-ItemSwap.timeSkipWindowThreshold = 1500
-ItemSwap.timeSkipWindowBuf = {}
+ItemSwap.timeSkipHeartbeatSec = 15
+ItemSwap.timeSkipHeartbeatClock = nil
 
 function ItemSwap_TimeSkipOn()
     if ItemSwap.timeSkipRunning then return end
@@ -1720,35 +1691,11 @@ function ItemSwap_TimeSkipTickBody()
     local wtOk, wt = pcall(function() return Calendar.GetWorldTime() end)
     if not (wtOk and type(wt) == "number") then return end
 
-    local alreadyReported = false
-    if ItemSwap.lastWorldTime then
-        local delta = wt - ItemSwap.lastWorldTime
-        if delta > ItemSwap.timeSkipDeltaThreshold then
-            ItemSwap.timeSkipInProgress = true
-        elseif ItemSwap.timeSkipInProgress then
-            ItemSwap.timeSkipInProgress = false
-            System.LogAlways(string.format("[ITEMSWAP-EVT] timeskip %.3f", wt))
-            alreadyReported = true
-        end
-    end
-    ItemSwap.lastWorldTime = wt
-
-    -- Second, sliding-window check - see ItemSwap.timeSkipWindowThreshold
-    -- above for why this exists. Independent of the per-tick check, but
-    -- skips reporting if that one just did, to avoid an easy duplicate for
-    -- the same physical skip (a rarer duplicate across the two isn't worth
-    -- fully eliminating - the receiving side already no-ops a redundant
-    -- reapply of an already-caught-up value).
-    table.insert(ItemSwap.timeSkipWindowBuf, wt)
-    while #ItemSwap.timeSkipWindowBuf > ItemSwap.timeSkipWindowLen do
-        table.remove(ItemSwap.timeSkipWindowBuf, 1)
-    end
-    if #ItemSwap.timeSkipWindowBuf == ItemSwap.timeSkipWindowLen then
-        local windowDelta = wt - ItemSwap.timeSkipWindowBuf[1]
-        if windowDelta > ItemSwap.timeSkipWindowThreshold and not alreadyReported then
-            System.LogAlways(string.format("[ITEMSWAP-EVT] timeskip %.3f", wt))
-            ItemSwap.timeSkipWindowBuf = {}
-        end
+    if not ItemSwap.timeSkipHeartbeatClock then
+        ItemSwap.timeSkipHeartbeatClock = os.clock()
+    elseif os.clock() - ItemSwap.timeSkipHeartbeatClock >= ItemSwap.timeSkipHeartbeatSec then
+        ItemSwap.timeSkipHeartbeatClock = os.clock()
+        System.LogAlways(string.format("[ITEMSWAP-EVT] timeskip %.3f", wt))
     end
 end
 

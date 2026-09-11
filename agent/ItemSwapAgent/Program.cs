@@ -471,6 +471,29 @@ _ = Task.Run(async () =>
     }
 });
 
+// Weather heartbeat, host-only - same reasoning as the time-skip heartbeat
+// in itemswap.lua: pure change-detection (only re-broadcast when the
+// host's own rain crosses a delta threshold) has the same class of gap a
+// real time-skip just exposed - if detection of "did it actually change"
+// ever misses or the host's weather simply never changes again after the
+// one time nobody was connected to receive it, a joiner (or anyone who
+// missed that one broadcast) never gets caught up. A periodic unconditional
+// resend closes that regardless of any change-detection edge case; 20s
+// keeps it cheap while bounding worst-case staleness to a small, known
+// number, same spirit as the time-skip heartbeat.
+_ = Task.Run(async () =>
+{
+    while (!shutdown.Task.IsCompleted)
+    {
+        await Task.Delay(TimeSpan.FromSeconds(20));
+        if (config.Role == "host" && lastBroadcastRain.HasValue)
+        {
+            try { await peerLink.NotifyWeatherAsync(lastBroadcastRain.Value); }
+            catch (Exception ex) { Console.WriteLine($"[agent] weather heartbeat failed: {ex.Message}"); }
+        }
+    }
+});
+
 Console.WriteLine("[agent] Running. Press Ctrl+C to exit.");
 
 await shutdown.Task;
