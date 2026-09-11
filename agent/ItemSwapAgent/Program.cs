@@ -53,10 +53,22 @@ var playerNames = new Dictionary<byte, string>();
 // the identical value 8x for nothing.
 float? lastBroadcastRain = null;
 
-peerLink.PlayerJoined += (id, name) =>
+peerLink.PlayerJoined += async (id, name) =>
 {
     playerNames[id] = name;
     Console.WriteLine($"[agent] player joined: id={id} name={name}");
+
+    // Weather sync is edge-triggered on the host's own rain changing, not
+    // periodic - confirmed live that a player who joins after the host's
+    // weather already settled (and stopped changing) never gets caught up
+    // at all, since nothing re-sends an unchanged value. Re-push the last
+    // known reading right on join so a late joiner always gets one, the
+    // same way time-sync already catches up a fresh arm.
+    if (config.Role == "host" && lastBroadcastRain.HasValue)
+    {
+        try { await peerLink.NotifyWeatherAsync(lastBroadcastRain.Value); }
+        catch (Exception ex) { Console.WriteLine($"[agent] failed to catch up {name}'s weather: {ex.Message}"); }
+    }
 };
 peerLink.PlayerLeft += async id =>
 {
