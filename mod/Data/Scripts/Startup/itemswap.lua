@@ -212,7 +212,7 @@ function ItemSwap_OnPeerDrop(dropId, cls, amount, health, x, y, z)
         System.LogAlways(string.format(
             "[ITEMSWAP] OnPeerDrop placed dropId=%s class=%s amount=%s ground=%s",
             tostring(dropId), tostring(cls), tostring(amount), tostring(found:GetName())))
-        ItemSwap_TrackDrop(dropId, cls, amount, found:GetName())
+        ItemSwap_TrackDrop(dropId, cls, amount, { found:GetName() })
     else
         System.LogAlways(string.format("[ITEMSWAP-ERR] OnPeerDrop failed dropId=%s: %s",
             tostring(dropId), tostring(err)))
@@ -1321,8 +1321,15 @@ function ItemSwap_DropIdKey(dropId)
     return tostring(dropId)
 end
 
-function ItemSwap_TrackDrop(dropId, cls, amount, entityName)
-    ItemSwap.tracked[ItemSwap_DropIdKey(dropId)] = { cls = cls, amount = tonumber(amount) or 1, entityName = entityName, state = "ground" }
+-- entityNames is a LIST, not a single name - confirmed live a single
+-- stacked inventory entry (one dropId, one reported amount) can spawn
+-- MULTIPLE separate ground entities (3 "Aço" from one stack of 3). Every
+-- name in the list is watched; the whole dropId resolves the moment ANY
+-- one of them vanishes (see ItemSwap_ClaimWatchTick), same "first pickup
+-- wins" spirit as everywhere else in this mod, just extended to cover a
+-- group instead of assuming exactly one ground copy per drop.
+function ItemSwap_TrackDrop(dropId, cls, amount, entityNames)
+    ItemSwap.tracked[ItemSwap_DropIdKey(dropId)] = { cls = cls, amount = tonumber(amount) or 1, entityNames = entityNames, state = "ground" }
 end
 
 -- Called every detect tick (piggybacks the same timer - no separate
@@ -1333,10 +1340,24 @@ end
 function ItemSwap_ClaimWatchTick()
     for dropId, t in pairs(ItemSwap.tracked) do
         if t.state == "ground" then
-            local ent = System.GetEntityByName(t.entityName)
-            if not ent then
+            local anyMissing = false
+            for _, name in ipairs(t.entityNames) do
+                if not System.GetEntityByName(name) then
+                    anyMissing = true
+                    break
+                end
+            end
+            if anyMissing then
                 t.state = "claimed_local"
                 System.LogAlways("[ITEMSWAP-EVT] claim " .. dropId)
+                -- Clean up any of the group's OTHER ground copies still
+                -- sitting there - without this, they'd stay pickup-able
+                -- outside our sync entirely, since this dropId is now
+                -- resolved and nothing else is watching them.
+                for _, name in ipairs(t.entityNames) do
+                    local ent = System.GetEntityByName(name)
+                    if ent then pcall(function() System.RemoveEntity(ent.id) end) end
+                end
             end
         end
     end
@@ -1368,15 +1389,23 @@ function ItemSwap_OnClaimResolved(dropId, won)
         return
     end
 
-    -- Lost. If our ground copy is still sitting there, remove it right now
-    -- so it can never be picked up locally after the fact - this covers the
-    -- common case (resolution arrives before the player gets to it) with no
-    -- inventory surgery needed at all.
-    local ent = System.GetEntityByName(t.entityName)
-    if ent then
-        pcall(function() System.RemoveEntity(ent.id) end)
+    -- Lost. If any of our group's ground copies are still sitting there,
+    -- remove them all right now so none of them can be picked up locally
+    -- after the fact - this covers the common case (resolution arrives
+    -- before the player gets to it) with no inventory surgery needed at
+    -- all. entityNames may have more than one name (a single stacked
+    -- drop can spawn several separate ground entities).
+    local removedAny = false
+    for _, name in ipairs(t.entityNames) do
+        local ent = System.GetEntityByName(name)
+        if ent then
+            pcall(function() System.RemoveEntity(ent.id) end)
+            removedAny = true
+        end
+    end
+    if removedAny then
         ItemSwap.tracked[key] = nil
-        System.LogAlways("[ITEMSWAP] claim " .. key .. " resolved: lost, removed the unclaimed ground copy")
+        System.LogAlways("[ITEMSWAP] claim " .. key .. " resolved: lost, removed the unclaimed ground copy/copies")
         return
     end
 
@@ -1953,19 +1982,31 @@ function ItemSwap_DetectTickBody()
             local dpos = pos
             pcall(function() dpos = first:GetWorldPos() or pos end)
 
+            -- Every entity in the group is tracked, not just the first -
+            -- confirmed live that a peer (or the local player) picking up
+            -- one of several separate ground copies from the same stacked
+            -- drop went completely undetected when only one representative
+            -- name was watched. See ItemSwap_ClaimWatchTick for how the
+            -- whole dropId now resolves the moment ANY of them vanishes.
+            local names = {}
+            for _, p in ipairs(list) do
+                local ok, nm = pcall(function() return p.entity:GetName() end)
+                if ok and nm then names[#names + 1] = nm end
+            end
+
             -- Minted here, not by the agent: this side needs the id
             -- immediately to track its own ground copy for the claim
             -- watcher, and every other player converges on the same id
             -- because it rides the wire unchanged from here on.
             local dropId = math.random(1, 2000000000)
-            ItemSwap_TrackDrop(dropId, cls, amount, first:GetName())
+            ItemSwap_TrackDrop(dropId, cls, amount, names)
 
             System.LogAlways(string.format(
                 "[ITEMSWAP-EVT] drop %d %s %d %.2f %.3f %.3f %.3f",
                 dropId, cls, amount, 1.0, dpos.x, dpos.y, dpos.z))
             -- Whole class group resolved this tick - none of them stay
-            -- pending (see ItemSwap_ClaimWatchTick/TrackDrop for how the
-            -- one tracked ground copy is watched from here on).
+            -- pending (see ItemSwap_ClaimWatchTick/TrackDrop for how every
+            -- tracked ground copy is watched from here on).
         else
             -- No decrease yet (or none ever tracked for this class, e.g.
             -- pre-existing world clutter this player never had in
