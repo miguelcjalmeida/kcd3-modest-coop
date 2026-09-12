@@ -2047,8 +2047,21 @@ function ItemSwap_DetectTickBody()
     ItemSwap_ClaimWatchTick()
 end
 
+-- detectRunning alone is not proof the Script.SetTimer chain is actually
+-- still alive - confirmed live (2026-09-12) that reloading a save can kill
+-- the timer chain outright while leaving this flag stuck on true (it's
+-- plain Lua state, unaffected by the reload). A naive "already running, do
+-- nothing" guard then permanently blocks recovery: the real C# agent's only
+-- way to nudge the detector is resending this exact command, and with the
+-- flag stuck true that resend was silently ignored for the rest of the
+-- session - no error, no log line, pos/drop detection just dead. Treat the
+-- flag as trustworthy only if a tick has genuinely run recently (a few
+-- multiples of the tick interval - generous, since this only needs to catch
+-- "the chain is gone", not police normal scheduling jitter).
 function ItemSwap_DetectOn()
-    if ItemSwap.detectRunning then return end
+    local alive = ItemSwap.detectRunning and ItemSwap.lastDetectTickClock
+        and (os.clock() - ItemSwap.lastDetectTickClock) < (ItemSwap.detectIntervalMs / 1000 * 4)
+    if alive then return end
     ItemSwap.detectRunning = true
     ItemSwap.lastInvCounts = ItemSwap_InventoryCounts()
 
