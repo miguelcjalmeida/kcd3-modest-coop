@@ -212,7 +212,7 @@ function ItemSwap_OnPeerDrop(dropId, cls, amount, health, x, y, z)
         System.LogAlways(string.format(
             "[ITEMSWAP] OnPeerDrop placed dropId=%s class=%s amount=%s ground=%s",
             tostring(dropId), tostring(cls), tostring(amount), tostring(found:GetName())))
-        ItemSwap_TrackDrop(dropId, cls, amount, { found:GetName() })
+        ItemSwap_TrackDrop(dropId, cls, amount, found:GetName())
     else
         System.LogAlways(string.format("[ITEMSWAP-ERR] OnPeerDrop failed dropId=%s: %s",
             tostring(dropId), tostring(err)))
@@ -1321,15 +1321,19 @@ function ItemSwap_DropIdKey(dropId)
     return tostring(dropId)
 end
 
--- entityNames is a LIST, not a single name - confirmed live a single
--- stacked inventory entry (one dropId, one reported amount) can spawn
--- MULTIPLE separate ground entities (3 "Aço" from one stack of 3). Every
--- name in the list is watched; the whole dropId resolves the moment ANY
--- one of them vanishes (see ItemSwap_ClaimWatchTick), same "first pickup
--- wins" spirit as everywhere else in this mod, just extended to cover a
--- group instead of assuming exactly one ground copy per drop.
-function ItemSwap_TrackDrop(dropId, cls, amount, entityNames)
-    ItemSwap.tracked[ItemSwap_DropIdKey(dropId)] = { cls = cls, amount = tonumber(amount) or 1, entityNames = entityNames, state = "ground" }
+-- One dropId always maps to exactly one ground entity - confirmed live
+-- (2026-09-12) that trying to group several same-class ground entities
+-- under one dropId (for items like "Aço" that don't stack on the ground,
+-- so a 3-unit drop spawns 3 separate 1-unit entities) was the wrong fix:
+-- picking up just one of the group correctly resolved the claim, but the
+-- other physical copies got cleaned up and their value was simply lost -
+-- the winner never actually received the full tracked amount, just
+-- whichever single piece they clicked pick-up on. See
+-- ItemSwap_DetectTickBody for the real fix: mint one dropId PER physical
+-- entity, using that entity's own real item.amount, instead of one
+-- combined dropId per class per tick.
+function ItemSwap_TrackDrop(dropId, cls, amount, entityName)
+    ItemSwap.tracked[ItemSwap_DropIdKey(dropId)] = { cls = cls, amount = tonumber(amount) or 1, entityName = entityName, state = "ground" }
 end
 
 -- Called every detect tick (piggybacks the same timer - no separate
@@ -1340,24 +1344,10 @@ end
 function ItemSwap_ClaimWatchTick()
     for dropId, t in pairs(ItemSwap.tracked) do
         if t.state == "ground" then
-            local anyMissing = false
-            for _, name in ipairs(t.entityNames) do
-                if not System.GetEntityByName(name) then
-                    anyMissing = true
-                    break
-                end
-            end
-            if anyMissing then
+            local ent = System.GetEntityByName(t.entityName)
+            if not ent then
                 t.state = "claimed_local"
                 System.LogAlways("[ITEMSWAP-EVT] claim " .. dropId)
-                -- Clean up any of the group's OTHER ground copies still
-                -- sitting there - without this, they'd stay pickup-able
-                -- outside our sync entirely, since this dropId is now
-                -- resolved and nothing else is watching them.
-                for _, name in ipairs(t.entityNames) do
-                    local ent = System.GetEntityByName(name)
-                    if ent then pcall(function() System.RemoveEntity(ent.id) end) end
-                end
             end
         end
     end
@@ -1389,23 +1379,15 @@ function ItemSwap_OnClaimResolved(dropId, won)
         return
     end
 
-    -- Lost. If any of our group's ground copies are still sitting there,
-    -- remove them all right now so none of them can be picked up locally
-    -- after the fact - this covers the common case (resolution arrives
-    -- before the player gets to it) with no inventory surgery needed at
-    -- all. entityNames may have more than one name (a single stacked
-    -- drop can spawn several separate ground entities).
-    local removedAny = false
-    for _, name in ipairs(t.entityNames) do
-        local ent = System.GetEntityByName(name)
-        if ent then
-            pcall(function() System.RemoveEntity(ent.id) end)
-            removedAny = true
-        end
-    end
-    if removedAny then
+    -- Lost. If our ground copy is still sitting there, remove it right now
+    -- so it can never be picked up locally after the fact - this covers the
+    -- common case (resolution arrives before the player gets to it) with no
+    -- inventory surgery needed at all.
+    local ent = System.GetEntityByName(t.entityName)
+    if ent then
+        pcall(function() System.RemoveEntity(ent.id) end)
         ItemSwap.tracked[key] = nil
-        System.LogAlways("[ITEMSWAP] claim " .. key .. " resolved: lost, removed the unclaimed ground copy/copies")
+        System.LogAlways("[ITEMSWAP] claim " .. key .. " resolved: lost, removed the unclaimed ground copy")
         return
     end
 
@@ -1471,14 +1453,35 @@ end
 -- without a usable .class field), and NOT entity.item.class either (the
 -- .item sub-object is a bound C++ wrapper exposing only "__this" as a raw
 -- field - actual data comes through methods like :GetId(), not properties).
+-- Also returns the entity's own item.amount. An earlier session (2026-09-12)
+-- concluded this field was unreliable from this call site - 3 separate
+-- "Aço" ground pieces all read amount=3 (the original stack's total) here,
+-- while a direct RC call against the same wuids read amount=1 each. That
+-- conclusion turned out to be a false lead: the code under test at the time
+-- (ItemSwap_DetectTickBody_Items, a split-out helper) had only ever been
+-- hot-patched into the running game's memory, never written back to this
+-- file, so a game restart silently reverted to the original monolithic
+-- ItemSwap_DetectTickBody and every "fix" tested afterwards had zero real
+-- effect - the amount=3 readings were from stale, unpatched code, not from
+-- this field being untrustworthy. Once that process bug was found and the
+-- entity-count-based amount heuristic below was properly installed via a
+-- real package+reinstall, a further live test (dropping 4 "Frango seco",
+-- which split into a 3-pile and a 1-pile - NOT the uniform 1-per-entity
+-- pattern "Aço" happens to have) exposed the heuristic's own inaccuracy,
+-- and a fresh direct RC read against those exact two piles correctly
+-- returned amount=1 and amount=3. So item.amount is trustworthy; reinstated
+-- here for real.
 function ItemSwap_GetGroundItemClass(entity)
-    local cls = nil
+    local cls, amount = nil, nil
     pcall(function()
         local wuid = entity.item:GetId()
         local itemData = ItemManager.GetItem(wuid)
-        if itemData then cls = itemData.class end
+        if itemData then
+            cls = itemData.class
+            amount = itemData.amount
+        end
     end)
-    return cls
+    return cls, amount
 end
 
 -- No official "IsCrouching" API was found on player/player.actor/player.human
@@ -1951,21 +1954,33 @@ function ItemSwap_DetectTickBody()
         for _, e in pairs(nearby) do
             if e and e.item ~= nil and not ItemSwap.seenItemIds[e.id] then
                 ItemSwap.seenItemIds[e.id] = true
-                local realCls = ItemSwap_GetGroundItemClass(e)
+                local realCls, realAmount = ItemSwap_GetGroundItemClass(e)
                 if realCls then
                     ItemSwap.pendingItems[#ItemSwap.pendingItems + 1] =
-                        { entity = e, cls = realCls, sinceClock = os.clock() }
+                        { entity = e, cls = realCls, amount = realAmount or 1, sinceClock = os.clock() }
                 end
             end
         end
     end
 
-    -- Grouped by class, not matched one-by-one - confirmed live this
-    -- matters: 3 separate pending entities from the same "Aço" drop must
-    -- resolve as ONE event carrying the whole amount, not each
-    -- independently re-claiming the same inventory decrease (which would
-    -- over-count 3x) or only the first one claiming it while the other two
-    -- silently expire unreported.
+    -- One dropId per physical ground entity - not one combined dropId per
+    -- class per tick. Confirmed live (2026-09-12) that grouping was the
+    -- wrong fix for items like "Aço" that don't stack on the ground (a
+    -- 3-unit drop spawns 3 separate 1-unit entities): picking up just one
+    -- of the group correctly resolved the claim, but the other physical
+    -- copies got cleaned up and their value was simply lost - the winner
+    -- never actually got the full tracked amount.
+    --
+    -- Each entity's own item.amount (re-read fresh at consumption time,
+    -- see ItemSwap_GetGroundItemClass's comment) is the real per-pile size -
+    -- covers "Paozinho" (one pile, amount=10), "Aço" (N piles, amount=1
+    -- each), and mixed splits like "Frango seco" (a pile of 3 + a pile of
+    -- 1) uniformly, with no special-casing by entity count. The confirmed
+    -- inventory decrease still gates which pending entities actually get
+    -- consumed this tick: entities are consumed in order, summing their
+    -- real amounts, until the running total reaches the decrease - any left
+    -- over stay pending (unrelated clutter, or genuinely part of the same
+    -- drop but not yet visible this tick) rather than being guessed at.
     local byClass = {}
     for _, p in ipairs(ItemSwap.pendingItems) do
         byClass[p.cls] = byClass[p.cls] or {}
@@ -1977,36 +1992,43 @@ function ItemSwap_DetectTickBody()
         local prevCount = ItemSwap.lastInvCounts[cls]
         local nowCount = newCounts[cls] or 0
         if prevCount and nowCount < prevCount then
-            local amount = prevCount - nowCount
-            local first = list[1].entity
-            local dpos = pos
-            pcall(function() dpos = first:GetWorldPos() or pos end)
-
-            -- Every entity in the group is tracked, not just the first -
-            -- confirmed live that a peer (or the local player) picking up
-            -- one of several separate ground copies from the same stacked
-            -- drop went completely undetected when only one representative
-            -- name was watched. See ItemSwap_ClaimWatchTick for how the
-            -- whole dropId now resolves the moment ANY of them vanishes.
-            local names = {}
-            for _, p in ipairs(list) do
+            local decrease = prevCount - nowCount
+            local consumed = 0
+            local i = 1
+            while i <= #list and consumed < decrease do
+                local p = list[i]
+                local dpos = pos
+                pcall(function() dpos = p.entity:GetWorldPos() or pos end)
                 local ok, nm = pcall(function() return p.entity:GetName() end)
-                if ok and nm then names[#names + 1] = nm end
+
+                -- Re-read fresh rather than trusting the amount captured
+                -- when first queued, in case it hadn't settled yet at that
+                -- earlier tick.
+                local _, freshAmount = ItemSwap_GetGroundItemClass(p.entity)
+                local amt = freshAmount or p.amount or 1
+
+                -- Minted here, not by the agent: this side needs the id
+                -- immediately to track its own ground copy for the claim
+                -- watcher, and every other player converges on the same
+                -- id because it rides the wire unchanged from here on.
+                local dropId = math.random(1, 2000000000)
+                if ok and nm then
+                    ItemSwap_TrackDrop(dropId, cls, amt, nm)
+                    System.LogAlways(string.format(
+                        "[ITEMSWAP-EVT] drop %d %s %d %.2f %.3f %.3f %.3f",
+                        dropId, cls, amt, 1.0, dpos.x, dpos.y, dpos.z))
+                end
+
+                consumed = consumed + amt
+                i = i + 1
             end
-
-            -- Minted here, not by the agent: this side needs the id
-            -- immediately to track its own ground copy for the claim
-            -- watcher, and every other player converges on the same id
-            -- because it rides the wire unchanged from here on.
-            local dropId = math.random(1, 2000000000)
-            ItemSwap_TrackDrop(dropId, cls, amount, names)
-
-            System.LogAlways(string.format(
-                "[ITEMSWAP-EVT] drop %d %s %d %.2f %.3f %.3f %.3f",
-                dropId, cls, amount, 1.0, dpos.x, dpos.y, dpos.z))
-            -- Whole class group resolved this tick - none of them stay
-            -- pending (see ItemSwap_ClaimWatchTick/TrackDrop for how every
-            -- tracked ground copy is watched from here on).
+            -- Anything left in this class's list beyond what the decrease
+            -- explained stays pending (same timeout rules as below).
+            for j = i, #list do
+                if os.clock() - list[j].sinceClock < ItemSwap.pendingTimeoutSec then
+                    stillPending[#stillPending + 1] = list[j]
+                end
+            end
         else
             -- No decrease yet (or none ever tracked for this class, e.g.
             -- pre-existing world clutter this player never had in
