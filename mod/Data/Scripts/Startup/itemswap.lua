@@ -1286,6 +1286,13 @@ ItemSwap.dogAnimTranslations = {
     CodeIdleVar = "Idle-Sit",
 }
 ItemSwap.seenItemIds = {}     -- entity id -> true, PickableItems already accounted for
+-- Newly-seen ground items not yet matched to an inventory decrease -
+-- {entity, cls, sinceClock} entries, re-checked every tick (not just the
+-- tick they first appeared) until matched or they time out. See the
+-- "Aço" comment in ItemSwap_DetectTickBody for why a single-tick check
+-- wasn't enough.
+ItemSwap.pendingItems = {}
+ItemSwap.pendingTimeoutSec = 3
 ItemSwap.lastInvCounts = {}   -- item class -> count, as of the previous tick
 
 -- ===== Claim / first-pickup-wins =====
@@ -1898,50 +1905,80 @@ function ItemSwap_DetectTickBody()
     -- fixed-class check silently missed it entirely (a real report: dropped
     -- items sometimes just never got detected). See ItemSwap_SpawnItemAt's
     -- own comment on this same fix for the full story.
-    local newItems = {}
+    --
+    -- Queued for matching, not matched in this same tick - confirmed live a
+    -- real report: dropping 3 "Aço" (steel) spawned 3 SEPARATE ground
+    -- entities (not one stacked pile), and the whole drop was silently
+    -- missed. The world entities appeared in a tick before the inventory
+    -- table finished reflecting the removal, so this tick's own count
+    -- comparison found no decrease yet; since old code only ever checked
+    -- the tick an item was first seen, by the time the count genuinely
+    -- dropped a tick later, there was nothing left in newItems to pair it
+    -- with (already marked seen and discarded). Queuing keeps a short-lived
+    -- record instead of matching once and discarding, so the very next
+    -- tick's count comparison still has something to check against.
     local nearby = System.GetEntitiesInSphere(pos, ItemSwap.dropRadius)
     if nearby then
         for _, e in pairs(nearby) do
             if e and e.item ~= nil and not ItemSwap.seenItemIds[e.id] then
                 ItemSwap.seenItemIds[e.id] = true
-                newItems[#newItems + 1] = e
+                local realCls = ItemSwap_GetGroundItemClass(e)
+                if realCls then
+                    ItemSwap.pendingItems[#ItemSwap.pendingItems + 1] =
+                        { entity = e, cls = realCls, sinceClock = os.clock() }
+                end
             end
         end
     end
 
-    -- For each new nearby item, verify ITS OWN actual class is one that
-    -- really decreased - never just assume the first decreased class found
-    -- belongs to it. Confirmed live this assumption was wrong and caused a
-    -- real bug: a class unrelated to the actual drop (e.g. something
-    -- untracked, or some other item's count moving for an unrelated reason
-    -- in the same tick) could get attributed to the new item,
-    -- sending a peer a completely different item than what was dropped.
-    for _, dropped in ipairs(newItems) do
-        local realCls = ItemSwap_GetGroundItemClass(dropped)
-        if realCls then
-            local prevCount = ItemSwap.lastInvCounts[realCls]
-            local nowCount = newCounts[realCls] or 0
-            if prevCount and nowCount < prevCount then
-                local dpos = pos
-                pcall(function() dpos = dropped:GetWorldPos() or pos end)
-                local amount = prevCount - nowCount
+    -- Grouped by class, not matched one-by-one - confirmed live this
+    -- matters: 3 separate pending entities from the same "Aço" drop must
+    -- resolve as ONE event carrying the whole amount, not each
+    -- independently re-claiming the same inventory decrease (which would
+    -- over-count 3x) or only the first one claiming it while the other two
+    -- silently expire unreported.
+    local byClass = {}
+    for _, p in ipairs(ItemSwap.pendingItems) do
+        byClass[p.cls] = byClass[p.cls] or {}
+        table.insert(byClass[p.cls], p)
+    end
 
-                -- Minted here, not by the agent: this side needs the id
-                -- immediately to track its own ground copy for the claim
-                -- watcher, and every other player converges on the same id
-                -- because it rides the wire unchanged from here on.
-                local dropId = math.random(1, 2000000000)
-                ItemSwap_TrackDrop(dropId, realCls, amount, dropped:GetName())
+    local stillPending = {}
+    for cls, list in pairs(byClass) do
+        local prevCount = ItemSwap.lastInvCounts[cls]
+        local nowCount = newCounts[cls] or 0
+        if prevCount and nowCount < prevCount then
+            local amount = prevCount - nowCount
+            local first = list[1].entity
+            local dpos = pos
+            pcall(function() dpos = first:GetWorldPos() or pos end)
 
-                System.LogAlways(string.format(
-                    "[ITEMSWAP-EVT] drop %d %s %d %.2f %.3f %.3f %.3f",
-                    dropId, realCls, amount, 1.0, dpos.x, dpos.y, dpos.z))
+            -- Minted here, not by the agent: this side needs the id
+            -- immediately to track its own ground copy for the claim
+            -- watcher, and every other player converges on the same id
+            -- because it rides the wire unchanged from here on.
+            local dropId = math.random(1, 2000000000)
+            ItemSwap_TrackDrop(dropId, cls, amount, first:GetName())
+
+            System.LogAlways(string.format(
+                "[ITEMSWAP-EVT] drop %d %s %d %.2f %.3f %.3f %.3f",
+                dropId, cls, amount, 1.0, dpos.x, dpos.y, dpos.z))
+            -- Whole class group resolved this tick - none of them stay
+            -- pending (see ItemSwap_ClaimWatchTick/TrackDrop for how the
+            -- one tracked ground copy is watched from here on).
+        else
+            -- No decrease yet (or none ever tracked for this class, e.g.
+            -- pre-existing world clutter this player never had in
+            -- inventory) - keep waiting, up to a short timeout, rather
+            -- than giving up after just one tick.
+            for _, p in ipairs(list) do
+                if os.clock() - p.sinceClock < ItemSwap.pendingTimeoutSec then
+                    stillPending[#stillPending + 1] = p
+                end
             end
-            -- realCls with no matching decrease (prevCount nil, e.g. an
-            -- untracked food/consumable class, or not actually smaller) is
-            -- correctly just skipped - no event, no misattribution.
         end
     end
+    ItemSwap.pendingItems = stillPending
 
     ItemSwap.lastInvCounts = newCounts
     ItemSwap_ClaimWatchTick()
@@ -1954,6 +1991,7 @@ function ItemSwap_DetectOn()
 
     -- Baseline: anything already lying around nearby doesn't count as "new".
     ItemSwap.seenItemIds = {}
+    ItemSwap.pendingItems = {}
     if player then
         local pos = nil
         pcall(function() pos = player:GetWorldPos() end)
