@@ -70,14 +70,21 @@ function ItemSwap_SpawnItemAt(cls, health, amount, pos)
         return nil, "no local player/inventory/human"
     end
 
-    -- Snapshot existing PickableItem ids near the target BEFORE minting, so
+    -- Snapshot existing ground-item ids near the target BEFORE minting, so
     -- we can tell "the one that just appeared" apart from anything already
-    -- lying around.
+    -- lying around. Matched by having a real .item component, not by class
+    -- name - confirmed live that a ranged weapon (a bow) places as class
+    -- "MissileWeapon", not "PickableItem", and CarryableItem.lua shows the
+    -- same PickableItem-derived-but-differently-named pattern exists more
+    -- generally, so a fixed class whitelist would keep missing new cases.
+    -- .item ~= nil is the one signal confirmed live to be true for every
+    -- real item entity and false for everything else (dogs, the player,
+    -- lights, audio areas, ...).
     local preIds = {}
     local nearby = System.GetEntitiesInSphere(pos, 3)
     if nearby then
         for _, e in pairs(nearby) do
-            if e and e.class == "PickableItem" then preIds[e.id] = true end
+            if e and e.item ~= nil then preIds[e.id] = true end
         end
     end
 
@@ -111,7 +118,7 @@ function ItemSwap_SpawnItemAt(cls, health, amount, pos)
         local nearby2 = System.GetEntitiesInSphere(pos, 3)
         if nearby2 then
             for _, e in pairs(nearby2) do
-                if e and e.class == "PickableItem" and e.id ~= anchor.id and not preIds[e.id] then
+                if e and e.item ~= nil and e.id ~= anchor.id and not preIds[e.id] then
                     found = e
                     break
                 end
@@ -1402,7 +1409,20 @@ function ItemSwap_InventoryCounts()
     for _, wuid in pairs(tbl) do
         local okItem, item = pcall(function() return ItemManager.GetItem(wuid) end)
         if okItem and item and item.class then
-            counts[item.class] = (counts[item.class] or 0) + 1
+            -- Sum the real stack amount, not just +1 per wuid entry -
+            -- confirmed live (real inventory dump) that a stackable item
+            -- (arrows, herbs, ingredients, money, ...) is one wuid entry
+            -- with a real item.amount field, sometimes in the hundreds.
+            -- Dropping only PART of a stack changes that entry's amount
+            -- but not the entry COUNT, so the old "+1 per wuid" version
+            -- never saw the class's total move and silently missed the
+            -- drop entirely - a real report from live play. This also
+            -- fixes a second bug in the same spot: even a detected
+            -- whole-stack drop only ever reported amount=1 to peers
+            -- (entry count 1->0), regardless of how many units were
+            -- actually in the stack.
+            local amt = tonumber(item.amount)
+            counts[item.class] = (counts[item.class] or 0) + (amt or 1)
         end
     end
     return counts
@@ -1872,12 +1892,17 @@ function ItemSwap_DetectTickBody()
 
     local newCounts = ItemSwap_InventoryCounts()
 
-    -- PickableItem entities nearby that we haven't accounted for yet.
+    -- Ground item entities nearby that we haven't accounted for yet.
+    -- Matched by .item component, not class=="PickableItem" - confirmed
+    -- live a dropped bow places as class "MissileWeapon" instead, so a
+    -- fixed-class check silently missed it entirely (a real report: dropped
+    -- items sometimes just never got detected). See ItemSwap_SpawnItemAt's
+    -- own comment on this same fix for the full story.
     local newItems = {}
     local nearby = System.GetEntitiesInSphere(pos, ItemSwap.dropRadius)
     if nearby then
         for _, e in pairs(nearby) do
-            if e and e.class == "PickableItem" and not ItemSwap.seenItemIds[e.id] then
+            if e and e.item ~= nil and not ItemSwap.seenItemIds[e.id] then
                 ItemSwap.seenItemIds[e.id] = true
                 newItems[#newItems + 1] = e
             end
@@ -1936,7 +1961,7 @@ function ItemSwap_DetectOn()
             local nearby = System.GetEntitiesInSphere(pos, ItemSwap.dropRadius)
             if nearby then
                 for _, e in pairs(nearby) do
-                    if e and e.class == "PickableItem" then ItemSwap.seenItemIds[e.id] = true end
+                    if e and e.item ~= nil then ItemSwap.seenItemIds[e.id] = true end
                 end
             end
         end
