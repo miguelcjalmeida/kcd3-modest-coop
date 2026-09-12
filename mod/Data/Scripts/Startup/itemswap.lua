@@ -1737,18 +1737,30 @@ end
 -- the cached reference still points at something real before trusting it
 -- for anything else that tick.
 --
--- Filtered by identity against the real engine global __playerDog, not
--- just "the first/last class==Dog entity found nearby" - confirmed live
--- (a real report) that any wild/village dog wandering within scan range
--- got picked up instead of the actual companion, showing a random dog's
--- info under "connected peers" instead of Mutt's. __playerDog is raw
--- userdata with no metatable (a previous session already confirmed it's a
--- dead end for calling methods like :GetWorldPos() on directly - THAT part
--- of the old finding still holds), but it compares fine for identity:
--- confirmed live, e.id == __playerDog correctly returned false for a
--- nearby wild dog. The real fix in the game's own behavior-tree AI
--- (Data/AI/crime/getPlayerCompanionType.xml) uses this exact same
--- '$entity == $__playerDog' comparison to tell companion from wildlife.
+-- Filtered by name, not just "the first/last class==Dog entity found
+-- nearby" - confirmed live (a real report) that any wild/village dog
+-- wandering within scan range got picked up instead of the actual
+-- companion, showing a random dog's info under "connected peers" instead
+-- of Mutt's.
+--
+-- First attempt compared e.id against the real engine global __playerDog
+-- (the same identity check the game's own behavior-tree AI uses in
+-- Data/AI/crime/getPlayerCompanionType.xml) - looked right (confirmed a
+-- wild dog nearby correctly failed the check) but that "confirmation" only
+-- ever tested a case where false was already the right answer either way.
+-- Confirmed live with the real companion actually adjacent (0.7m away):
+-- e.id == __playerDog is false even then - __playerDog is a structurally
+-- different userdata subtype from a normal entity id (a distinct byte
+-- pattern, not just a different value), so the comparison can never be
+-- true for anything, regardless of ownership.
+--
+-- The name check that actually works: Data/Libs/Storm/roles/characters/
+-- dogCompanion.xml defines a rule - <isPlayersDogCompanion/> selector adds
+-- role "VORECH" - and confirmed live, the entity actually adjacent to the
+-- player is named "tvez_vorech" (location-prefixed, "vorech" suffix),
+-- while an unrelated wild dog 13m away was "tvid_dog_2" - no "vorech" in
+-- it. GetMetaRoles() doesn't surface this STORM-level role directly, so
+-- matching the name substring is what's actually checkable from Lua.
 ItemSwap.localDogRef = nil
 
 function ItemSwap_GetDogRef()
@@ -1768,8 +1780,9 @@ function ItemSwap_GetDogRef()
     pcall(function()
         for _, e in pairs(System.GetEntitiesInSphere(ppos, ItemSwap.localDogScanRadius)) do
             local ok, cls = pcall(function() return e.class end)
-            local ok2, isMine = pcall(function() return e.id == __playerDog end)
-            if ok and cls == "Dog" and ok2 and isMine then ItemSwap.localDogRef = e end
+            local ok2, nm = pcall(function() return e:GetName() end)
+            local isMine = ok2 and nm and string.find(string.lower(nm), "vorech", 1, true) ~= nil
+            if ok and cls == "Dog" and isMine then ItemSwap.localDogRef = e end
         end
     end)
     return ItemSwap.localDogRef
