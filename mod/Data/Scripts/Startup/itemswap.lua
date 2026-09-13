@@ -1327,7 +1327,16 @@ ItemSwap.seenItemIds = {}     -- entity id -> true, PickableItems already accoun
 -- "Aço" comment in ItemSwap_DetectTickBody for why a single-tick check
 -- wasn't enough.
 ItemSwap.pendingItems = {}
-ItemSwap.pendingTimeoutSec = 3
+-- Guarantees at least 6 tick-chances to match a pending entity against an
+-- inventory decrease, not a fixed wall-clock duration - confirmed live
+-- (2026-09-13) that a fixed 3s timeout was fine at the original 250ms tick
+-- (12 chances) but silently started missing real drops (books, bows,
+-- "sometimes fires, sometimes doesn't") once detectIntervalMs was widened
+-- to 1500ms for the RC-throughput fix, since that same 3s window only gave
+-- 2 chances. Scaling with the actual interval keeps this robust regardless
+-- of whatever detectIntervalMs is tuned to next. max(3, ...) preserves the
+-- original 3s at 250ms and below, where 6 ticks would be less than that.
+ItemSwap.pendingTimeoutSec = math.max(3, ItemSwap.detectIntervalMs / 1000 * 6)
 ItemSwap.lastInvCounts = {}   -- item class -> count, as of the previous tick
 
 -- ===== Claim / first-pickup-wins =====
