@@ -452,15 +452,16 @@ _ = Task.Run(async () =>
             // watchdog would never know to rearm it. A staleness check on
             // the heartbeat is the only way to tell a genuinely dead chain
             // from a merely idle one. 5s is comfortably above every chain's
-            // own interval (the slowest, time-skip, ticks every 1s).
+            // own interval (the slowest is detect, which also now carries
+            // time-sync - see itemswap.lua's ItemSwap.detectIntervalMs -
+            // ticking every 1.5s).
             await rc.SendLuaAsync(
                 "local ok, armed = pcall(function() " +
                 "local now = os.clock() " +
                 "local function alive(flag, clk) return flag == true and clk ~= nil and (now - clk) < 5 end " +
                 "return alive(ItemSwap.detectRunning, ItemSwap.lastDetectTickClock) " +
                 "and alive(ItemSwap.animRunning, ItemSwap.lastAnimTickClock) " +
-                "and alive(ItemSwap.cooldownDisplayRunning, ItemSwap.lastCooldownDisplayTickClock) " +
-                "and alive(ItemSwap.timeSkipRunning, ItemSwap.lastTimeSkipTickClock) end) " +
+                "and alive(ItemSwap.cooldownDisplayRunning, ItemSwap.lastCooldownDisplayTickClock) end) " +
                 "System.LogAlways('[ITEMSWAP-ARMCHECK] ' .. tostring(ok and armed == true))");
         }
         catch (Exception ex)

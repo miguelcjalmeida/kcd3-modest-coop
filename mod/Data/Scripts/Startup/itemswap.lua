@@ -1286,7 +1286,20 @@ ItemSwap.detectRunning = false
 -- overlapping chains piling up, permanently, each doing a full expensive
 -- tick every 250ms).
 ItemSwap.detectGeneration = 0
-ItemSwap.detectIntervalMs = 250
+-- 1500ms, not the original 250ms - confirmed live (2026-09-13) that RC
+-- itself is the real ceiling on how much of this can ever reach peers: the
+-- agent paces RC sends to ~1 per 95ms (a 75ms gap plus a 20ms settle delay,
+-- both already tuned once for a near-identical backlog symptom - see
+-- RemoteConsoleClient.cs), so two remote peers alone broadcasting at the
+-- old 4Hz already consumed nearly all of that ~10.5/sec budget, leaving
+-- almost no headroom for drop/claim/time-sync traffic before a backlog
+-- started growing continuously and never draining - confirmed live as a
+-- real several-minutes-and-growing delay on a friend's dead/unconscious
+-- status. This is also now the single shared poll for time-sync (folded in
+-- below - see ItemSwap_TimeSkipTickBody) rather than that running its own
+-- separate 1s chain, so there's one clear knob for "how chatty is this mod
+-- over the network" instead of several.
+ItemSwap.detectIntervalMs = 1500
 ItemSwap.dropRadius = 3
 -- Local-only companion dog status (F2 panel) - a fresh scan every detect
 -- tick, not a cached entity reference, so this is purely a "how far away
@@ -1705,87 +1718,39 @@ function ItemSwap_GetLocalExtraStateThrottled()
     return s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9], s[10], s[11], s[12], s[13]
 end
 
--- Milestone 10: time-skip sync, on its own independent 1s watcher -
--- deliberately NOT piggybacked on the 250ms DetectTickBody chain (this
--- codebase has already established elsewhere that certain transitions can
--- silently disrupt a Script.SetTimer chain's effective tick rate, so a
--- coarser, independent chain is more robust regardless of what else is
--- going on).
+-- Milestone 10: time-skip sync - folded into the shared 1.5s poll (see
+-- ItemSwap.detectIntervalMs) instead of its own separate Script.SetTimer
+-- chain, as part of a broader refactor (2026-09-13) to cut how many
+-- independent things this mod broadcasts to peers: RC itself turned out to
+-- be the real ceiling on network chatter (see the comment on
+-- detectIntervalMs), and every extra always-on chain was extra load on that
+-- same shared, serialized RC pipe regardless of what it was for.
 --
--- This went through two failed detection-threshold designs before landing
--- here, both confirmed live to miss real skips: a single-tick delta
--- threshold (any threshold, no matter how low, can be evaded by a
+-- Threshold is against a fixed anchor - the world time this player last
+-- actually announced - not a per-tick or sliding-window delta, which is
+-- what two earlier designs here used and both failed live: a single-tick
+-- delta threshold (any threshold, no matter how low, can be evaded by a
 -- sufficiently gentle-but-sustained ramp - a real multi-hour dial sleep
--- advanced world time by ~25,800 seconds total with no individual 1s tick
--- ever looking abnormal), and a sliding-window delta on top of that (still
--- missed two more real sleeps of different sizes, for reasons that were
--- never fully pinned down even after directly verifying the window logic
--- itself was correct in isolation). Rather than keep guessing at exactly
--- how a real transition ramps, this drops threshold-based detection
--- entirely: every tick just unconditionally re-announces this player's
--- own current time, at most once every timeSkipHeartbeatSec. Nobody needs
--- to correctly detect a "skip event" happened at all - within one
--- heartbeat interval, everyone converges to whoever is furthest ahead
--- regardless of how any given skip ramped (confirmed live: a manually
--- fired announce reached a peer and applied correctly, proving the
--- broadcast/relay/apply pipeline was never the problem - only "when do we
--- decide to announce" was). 15s keeps normal play's own periodic
--- resends cheap while bounding worst-case sync staleness to a small,
--- known number.
-ItemSwap.timeSkipIntervalMs = 1000
-ItemSwap.timeSkipRunning = false
-ItemSwap.timeSkipHeartbeatSec = 15
-ItemSwap.timeSkipHeartbeatClock = nil
--- Generation-guarded the same way as ItemSwap_DetectTick (see its own
--- comment for the full story) - itemswap_start restarts this chain
--- alongside the others on every rearm, equally exposed to the same
--- overlapping-chains bug (confirmed live 2026-09-13: a handful of rapid
--- rearms left ~3x the expected number of ticks firing across every one of
--- these loops, not just Detect - directly matching a real report of
--- broadcasts and time-sync going sluggish over a long session).
-ItemSwap.timeSkipGeneration = 0
-
-function ItemSwap_TimeSkipOn()
-    if ItemSwap.timeSkipRunning then return end
-    ItemSwap.timeSkipRunning = true
-    ItemSwap.timeSkipGeneration = ItemSwap.timeSkipGeneration + 1
-    local myGen = ItemSwap.timeSkipGeneration
-    System.LogAlways("[ITEMSWAP] time-skip watcher ON (interval=" .. ItemSwap.timeSkipIntervalMs .. "ms)")
-    Script.SetTimer(ItemSwap.timeSkipIntervalMs, function() ItemSwap_TimeSkipTick(myGen) end)
-end
-
-function ItemSwap_TimeSkipOff()
-    ItemSwap.timeSkipRunning = false
-    System.LogAlways("[ITEMSWAP] time-skip watcher OFF")
-end
-
--- See ItemSwap.lastAnimTickClock for why this exists - this is the chain
--- most directly implicated live: a friend's real dial time-skip never
--- reached anyone else, while timeSkipRunning still read true the whole
--- time, because the engine had silently stopped firing this exact timer
--- sometime earlier (very plausibly during a *previous* transition) and
--- nothing ever noticed since the watchdog only checked the sticky flag.
-ItemSwap.lastTimeSkipTickClock = nil
-
-function ItemSwap_TimeSkipTick(gen)
-    if not ItemSwap.timeSkipRunning or gen ~= ItemSwap.timeSkipGeneration then return end
-    ItemSwap.lastTimeSkipTickClock = os.clock()
-    Script.SetTimer(ItemSwap.timeSkipIntervalMs, function() ItemSwap_TimeSkipTick(gen) end)
-
-    local ok, tickErr = pcall(ItemSwap_TimeSkipTickBody)
-    if not ok then
-        System.LogAlways("[ITEMSWAP-ERR] TimeSkipTick failed (loop kept alive): " .. tostring(tickErr))
-    end
-end
+-- advanced world time by ~25,800 seconds total with no individual tick ever
+-- looking abnormal), and a sliding-window delta on top of that (still
+-- missed two more real sleeps of different sizes). Comparing against a
+-- fixed anchor instead of a recent-history shape isn't vulnerable to that
+-- same evasion: a ramp of any speed or shape necessarily crosses a fixed
+-- line eventually, no matter how gently it gets there. This also cuts real
+-- network chatter hard on its own terms - ordinary play only crosses a
+-- 30-in-game-minute gap occasionally, not on some fixed heartbeat
+-- regardless of whether anything meaningful changed.
+ItemSwap.timeSkipThresholdSec = 1800  -- 30 in-game minutes; Calendar.GetWorldTime() is in seconds
+ItemSwap.lastAnnouncedWorldTime = nil
 
 function ItemSwap_TimeSkipTickBody()
     local wtOk, wt = pcall(function() return Calendar.GetWorldTime() end)
     if not (wtOk and type(wt) == "number") then return end
 
-    if not ItemSwap.timeSkipHeartbeatClock then
-        ItemSwap.timeSkipHeartbeatClock = os.clock()
-    elseif os.clock() - ItemSwap.timeSkipHeartbeatClock >= ItemSwap.timeSkipHeartbeatSec then
-        ItemSwap.timeSkipHeartbeatClock = os.clock()
+    if not ItemSwap.lastAnnouncedWorldTime then
+        ItemSwap.lastAnnouncedWorldTime = wt
+    elseif math.abs(wt - ItemSwap.lastAnnouncedWorldTime) >= ItemSwap.timeSkipThresholdSec then
+        ItemSwap.lastAnnouncedWorldTime = wt
         System.LogAlways(string.format("[ITEMSWAP-EVT] timeskip %.3f", wt))
     end
 end
@@ -1827,6 +1792,14 @@ function ItemSwap_DetectTick(gen)
     local ok, tickErr = pcall(ItemSwap_DetectTickBody)
     if not ok then
         System.LogAlways("[ITEMSWAP-ERR] DetectTick failed (loop kept alive): " .. tostring(tickErr))
+    end
+
+    -- Own pcall, independent of the one above: a time-sync failure should
+    -- never take down drop detection or vice versa. Folded into this same
+    -- chain rather than its own - see ItemSwap.timeSkipThresholdSec.
+    local tsOk, tsErr = pcall(ItemSwap_TimeSkipTickBody)
+    if not tsOk then
+        System.LogAlways("[ITEMSWAP-ERR] TimeSkipTickBody failed (loop kept alive): " .. tostring(tsErr))
     end
 end
 
@@ -2185,7 +2158,6 @@ function ItemSwap_Start()
     ItemSwap_DetectOff()
     ItemSwap_AnimOff()
     ItemSwap_CooldownDisplayOff()
-    ItemSwap_TimeSkipOff()
     System.LogAlways("[ITEMSWAP] itemswap_start: stopped everything, rearming in 1.5s")
     Script.SetTimer(1500, ItemSwap_StartOnPart)
 end
@@ -2194,7 +2166,6 @@ function ItemSwap_StartOnPart()
     ItemSwap_DetectOn()
     ItemSwap_AnimOn()
     ItemSwap_CooldownDisplayOn()
-    ItemSwap_TimeSkipOn()
     -- Every arm asks everyone connected "what time is it?" AND tells them
     -- our own current time in the same message - a genuine two-way sync in
     -- one round trip (symmetric: works the same whether we're host or
@@ -2204,6 +2175,10 @@ function ItemSwap_StartOnPart()
     -- sends is safe to just try applying.
     local wtOk, myWorldTime = pcall(function() return Calendar.GetWorldTime() end)
     System.LogAlways("[ITEMSWAP-EVT] timesyncrequest " .. string.format("%.3f", (wtOk and myWorldTime) or 0))
+    -- Anchor the periodic threshold-based announce (ItemSwap_TimeSkipTickBody)
+    -- to the value just sent here, so the very next 1.5s tick doesn't
+    -- immediately re-announce the same time again.
+    ItemSwap.lastAnnouncedWorldTime = wtOk and myWorldTime or nil
     System.LogAlways("[ITEMSWAP] itemswap_start: rearmed")
 end
 
