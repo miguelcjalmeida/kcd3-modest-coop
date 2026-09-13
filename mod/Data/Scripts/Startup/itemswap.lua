@@ -622,10 +622,16 @@ ItemSwap.animStartClock = nil    -- os.clock() reference point captured once in 
 -- way to tell a genuinely dead chain from a merely-idle one.
 ItemSwap.lastAnimTickClock = nil
 
-function ItemSwap_AnimTick()
-    if not ItemSwap.animRunning then return end
+-- Generation-guarded the same way as ItemSwap_DetectTick (see its own
+-- comment for the full story) - ItemSwap_Start() restarts this chain
+-- alongside Detect/CooldownDisplay/TimeSkip on every rearm, so it's exactly
+-- as exposed to the same overlapping-chains bug.
+ItemSwap.animGeneration = 0
+
+function ItemSwap_AnimTick(gen)
+    if not ItemSwap.animRunning or gen ~= ItemSwap.animGeneration then return end
     ItemSwap.lastAnimTickClock = os.clock()
-    Script.SetTimer(ItemSwap.animIntervalMs, ItemSwap_AnimTick)  -- reschedule first, same reasoning as ItemSwap_DetectTick
+    Script.SetTimer(ItemSwap.animIntervalMs, function() ItemSwap_AnimTick(gen) end)  -- reschedule first, same reasoning as ItemSwap_DetectTick
     local ok, err = pcall(ItemSwap_AnimTickBody)
     if not ok then
         System.LogAlways("[ITEMSWAP-ERR] AnimTick failed (loop kept alive): " .. tostring(err))
@@ -724,9 +730,11 @@ end
 function ItemSwap_AnimOn()
     if ItemSwap.animRunning then return end
     ItemSwap.animRunning = true
+    ItemSwap.animGeneration = ItemSwap.animGeneration + 1
+    local myGen = ItemSwap.animGeneration
     ItemSwap.animStartClock = os.clock()
     System.LogAlways("[ITEMSWAP] marker animation ON")
-    Script.SetTimer(ItemSwap.animIntervalMs, ItemSwap_AnimTick)
+    Script.SetTimer(ItemSwap.animIntervalMs, function() ItemSwap_AnimTick(myGen) end)
 end
 
 function ItemSwap_AnimOff()
@@ -1214,11 +1222,18 @@ pcall(function() System.ExecuteCommand("bind e itemswap_teleport_confirm") end)
 -- everything else itemswap_start starts.
 ItemSwap.cooldownDisplayIntervalMs = 4  -- same as the F2 panel: 16ms/8ms both flickered visibly in that earlier tuning, 4ms didn't
 ItemSwap.cooldownDisplayRunning = false
+-- Generation-guarded the same way as ItemSwap_DetectTick (see its own
+-- comment for the full story) - itemswap_start restarts this chain
+-- alongside the others on every rearm, equally exposed to the same
+-- overlapping-chains bug.
+ItemSwap.cooldownDisplayGeneration = 0
 
 function ItemSwap_CooldownDisplayOn()
     if ItemSwap.cooldownDisplayRunning then return end
     ItemSwap.cooldownDisplayRunning = true
-    Script.SetTimer(ItemSwap.cooldownDisplayIntervalMs, ItemSwap_CooldownDisplayTick)
+    ItemSwap.cooldownDisplayGeneration = ItemSwap.cooldownDisplayGeneration + 1
+    local myGen = ItemSwap.cooldownDisplayGeneration
+    Script.SetTimer(ItemSwap.cooldownDisplayIntervalMs, function() ItemSwap_CooldownDisplayTick(myGen) end)
 end
 
 function ItemSwap_CooldownDisplayOff()
@@ -1230,10 +1245,10 @@ end
 -- forever if the engine ever silently stops firing this chain.
 ItemSwap.lastCooldownDisplayTickClock = nil
 
-function ItemSwap_CooldownDisplayTick()
-    if not ItemSwap.cooldownDisplayRunning then return end
+function ItemSwap_CooldownDisplayTick(gen)
+    if not ItemSwap.cooldownDisplayRunning or gen ~= ItemSwap.cooldownDisplayGeneration then return end
     ItemSwap.lastCooldownDisplayTickClock = os.clock()
-    Script.SetTimer(ItemSwap.cooldownDisplayIntervalMs, ItemSwap_CooldownDisplayTick)  -- reschedule first, same reasoning as every other timer loop here
+    Script.SetTimer(ItemSwap.cooldownDisplayIntervalMs, function() ItemSwap_CooldownDisplayTick(gen) end)  -- reschedule first, same reasoning as every other timer loop here
     local ok, err = pcall(ItemSwap_CooldownDisplayTickBody)
     if not ok then
         System.LogAlways("[ITEMSWAP-ERR] CooldownDisplayTick failed (loop kept alive): " .. tostring(err))
@@ -1264,6 +1279,13 @@ end
 -- wired up yet. Fine for early testing; revisit if condition needs to
 -- survive a trade.
 ItemSwap.detectRunning = false
+-- Bumped by every ItemSwap_DetectOn() call; each Script.SetTimer chain
+-- captures its own value as a closure upvalue at schedule time and dies
+-- (no reschedule) the moment it no longer matches - see ItemSwap_DetectOn
+-- and ItemSwap_DetectTick for why this exists (a real, confirmed-live bug:
+-- overlapping chains piling up, permanently, each doing a full expensive
+-- tick every 250ms).
+ItemSwap.detectGeneration = 0
 ItemSwap.detectIntervalMs = 250
 ItemSwap.dropRadius = 3
 -- Local-only companion dog status (F2 panel) - a fresh scan every detect
@@ -1714,12 +1736,22 @@ ItemSwap.timeSkipIntervalMs = 1000
 ItemSwap.timeSkipRunning = false
 ItemSwap.timeSkipHeartbeatSec = 15
 ItemSwap.timeSkipHeartbeatClock = nil
+-- Generation-guarded the same way as ItemSwap_DetectTick (see its own
+-- comment for the full story) - itemswap_start restarts this chain
+-- alongside the others on every rearm, equally exposed to the same
+-- overlapping-chains bug (confirmed live 2026-09-13: a handful of rapid
+-- rearms left ~3x the expected number of ticks firing across every one of
+-- these loops, not just Detect - directly matching a real report of
+-- broadcasts and time-sync going sluggish over a long session).
+ItemSwap.timeSkipGeneration = 0
 
 function ItemSwap_TimeSkipOn()
     if ItemSwap.timeSkipRunning then return end
     ItemSwap.timeSkipRunning = true
+    ItemSwap.timeSkipGeneration = ItemSwap.timeSkipGeneration + 1
+    local myGen = ItemSwap.timeSkipGeneration
     System.LogAlways("[ITEMSWAP] time-skip watcher ON (interval=" .. ItemSwap.timeSkipIntervalMs .. "ms)")
-    Script.SetTimer(ItemSwap.timeSkipIntervalMs, ItemSwap_TimeSkipTick)
+    Script.SetTimer(ItemSwap.timeSkipIntervalMs, function() ItemSwap_TimeSkipTick(myGen) end)
 end
 
 function ItemSwap_TimeSkipOff()
@@ -1735,10 +1767,10 @@ end
 -- nothing ever noticed since the watchdog only checked the sticky flag.
 ItemSwap.lastTimeSkipTickClock = nil
 
-function ItemSwap_TimeSkipTick()
-    if not ItemSwap.timeSkipRunning then return end
+function ItemSwap_TimeSkipTick(gen)
+    if not ItemSwap.timeSkipRunning or gen ~= ItemSwap.timeSkipGeneration then return end
     ItemSwap.lastTimeSkipTickClock = os.clock()
-    Script.SetTimer(ItemSwap.timeSkipIntervalMs, ItemSwap_TimeSkipTick)
+    Script.SetTimer(ItemSwap.timeSkipIntervalMs, function() ItemSwap_TimeSkipTick(gen) end)
 
     local ok, tickErr = pcall(ItemSwap_TimeSkipTickBody)
     if not ok then
@@ -1762,10 +1794,24 @@ end
 -- check, for the same reason, on this chain too.
 ItemSwap.lastDetectTickClock = nil
 
-function ItemSwap_DetectTick()
-    if not ItemSwap.detectRunning then return end
+-- gen is a closure upvalue, not a global read - confirmed live (2026-09-13)
+-- that detectRunning alone cannot prevent overlapping chains: it's a single
+-- flag shared by every chain, so a stop+restart happening faster than one
+-- tick interval (250ms) leaves the old chain's next check still seeing
+-- "running" (the new arm already flipped it back true) and it reschedules
+-- itself right alongside the new chain - permanently, with no way to ever
+-- cancel an already-scheduled Script.SetTimer callback. Measured live: 250ms
+-- position broadcasts were firing at ~3x the expected rate after a handful
+-- of rapid rearms (this mod's own manual RC testing colliding with the
+-- agent's automatic reload-triggered rearms), each extra chain silently
+-- adding its own full entity-scan + inventory-walk tick forever. Each
+-- chain now instead carries the exact generation it was scheduled under
+-- and self-terminates the instant a newer ItemSwap_DetectOn() supersedes it,
+-- however many rearms happened however close together.
+function ItemSwap_DetectTick(gen)
+    if not ItemSwap.detectRunning or gen ~= ItemSwap.detectGeneration then return end
     ItemSwap.lastDetectTickClock = os.clock()
-    Script.SetTimer(ItemSwap.detectIntervalMs, ItemSwap_DetectTick)  -- reschedule first: belt-and-braces alongside the pcall below
+    Script.SetTimer(ItemSwap.detectIntervalMs, function() ItemSwap_DetectTick(gen) end)  -- reschedule first: belt-and-braces alongside the pcall below
 
     -- The whole body is wrapped in pcall, not just individual risky calls.
     -- Confirmed live (2026-09-07): an uncaught error here doesn't just skip
@@ -1773,7 +1819,8 @@ function ItemSwap_DetectTick()
     -- "reschedule first" comment above assumed - it silently kills the
     -- entire Script.SetTimer chain outright, with nothing in kcd.log to
     -- explain why position/drop events just stop forever until something
-    -- external (a manual `#ItemSwap_DetectTick()` call) kicks it again.
+    -- external (a manual `#ItemSwap_DetectTick(ItemSwap.detectGeneration)`
+    -- call) kicks it again.
     -- That's not acceptable for something players depend on without any
     -- debugging access of their own, so nothing inside this function may
     -- ever be allowed to throw uncaught.
@@ -2063,6 +2110,8 @@ function ItemSwap_DetectOn()
         and (os.clock() - ItemSwap.lastDetectTickClock) < (ItemSwap.detectIntervalMs / 1000 * 4)
     if alive then return end
     ItemSwap.detectRunning = true
+    ItemSwap.detectGeneration = ItemSwap.detectGeneration + 1
+    local myGen = ItemSwap.detectGeneration
     ItemSwap.lastInvCounts = ItemSwap_InventoryCounts()
 
     -- Baseline: anything already lying around nearby doesn't count as "new".
@@ -2081,9 +2130,9 @@ function ItemSwap_DetectOn()
         end
     end
 
-    System.LogAlways(string.format("[ITEMSWAP] drop detector ON (interval=%dms, radius=%d)",
-        ItemSwap.detectIntervalMs, ItemSwap.dropRadius))
-    Script.SetTimer(ItemSwap.detectIntervalMs, ItemSwap_DetectTick)
+    System.LogAlways(string.format("[ITEMSWAP] drop detector ON (interval=%dms, radius=%d, gen=%d)",
+        ItemSwap.detectIntervalMs, ItemSwap.dropRadius, myGen))
+    Script.SetTimer(ItemSwap.detectIntervalMs, function() ItemSwap_DetectTick(myGen) end)
 end
 
 function ItemSwap_DetectOff()
