@@ -745,6 +745,20 @@ end
 System.AddCCommand("itemswap_anim_on", "ItemSwap_AnimOn()", "ItemSwap Milestone 3: start marker bob animation")
 System.AddCCommand("itemswap_anim_off", "ItemSwap_AnimOff()", "ItemSwap Milestone 3: stop marker bob animation")
 
+-- Revives a stalled chain without the animRunning guard blocking it (which
+-- would otherwise just no-op, since the flag itself never gets cleared by
+-- a stall - see ItemSwap_DetectKick's own comment for the full story).
+-- No meaningful state to lose here (the bob phase resetting is harmless),
+-- but it still needs its own generation bump to actually schedule a new
+-- chain.
+function ItemSwap_AnimKick()
+    ItemSwap.animRunning = true
+    ItemSwap.animGeneration = ItemSwap.animGeneration + 1
+    local myGen = ItemSwap.animGeneration
+    ItemSwap.animStartClock = os.clock()
+    Script.SetTimer(ItemSwap.animIntervalMs, function() ItemSwap_AnimTick(myGen) end)
+end
+
 -- ===== Milestone 5: F2 connected-peers panel =====
 -- A simple on-screen text panel, toggled by F2, listing every connected
 -- peer and their distance from the local player. Two APIs make this
@@ -1238,6 +1252,16 @@ end
 
 function ItemSwap_CooldownDisplayOff()
     ItemSwap.cooldownDisplayRunning = false
+end
+
+-- See ItemSwap_AnimKick's comment - same reasoning, no meaningful state to
+-- lose, just needs the guard bypassed and a fresh generation to actually
+-- schedule a new chain.
+function ItemSwap_CooldownDisplayKick()
+    ItemSwap.cooldownDisplayRunning = true
+    ItemSwap.cooldownDisplayGeneration = ItemSwap.cooldownDisplayGeneration + 1
+    local myGen = ItemSwap.cooldownDisplayGeneration
+    Script.SetTimer(ItemSwap.cooldownDisplayIntervalMs, function() ItemSwap_CooldownDisplayTick(myGen) end)
 end
 
 -- See ItemSwap.lastAnimTickClock for why this exists: a staleness check the
@@ -2016,6 +2040,30 @@ function ItemSwap_DetectTickBody()
         table.insert(byClass[p.cls], p)
     end
 
+    -- Next tick's baseline is built explicitly, class by class, rather than
+    -- blindly replaced with newCounts wholesale - confirmed live
+    -- (2026-09-13) that a blind replace silently and permanently "forgets"
+    -- a genuine decrease whenever the physical ground entity for that drop
+    -- hadn't been scanned into pendingItems yet on the SAME tick the
+    -- decrease first became visible (a real, frequently-reproducible race,
+    -- not tied to any particular item type or a long inventory session -
+    -- just whichever tick boundary a drop happens to straddle). Once
+    -- forgotten this way, no later tick could ever detect that same
+    -- decrease again, even after the entity did appear, because the
+    -- "before" value needed to compare against no longer existed. Holding
+    -- the OLD (higher) baseline instead - for unmatched classes entirely,
+    -- and for the unexplained remainder of a partially-matched one - keeps
+    -- the gap visible for a late entity to still match against, bounded by
+    -- the same pendingTimeoutSec used for the entities themselves so a
+    -- decrease from something unrelated to a physical drop (traded away,
+    -- consumed, taken by a quest) doesn't wedge a class's baseline forever.
+    ItemSwap.unmatchedDecreaseSince = ItemSwap.unmatchedDecreaseSince or {}
+    local nextInvCounts = {}
+    for cls, nowCount in pairs(newCounts) do nextInvCounts[cls] = nowCount end
+    for cls in pairs(ItemSwap.lastInvCounts) do
+        if nextInvCounts[cls] == nil then nextInvCounts[cls] = 0 end
+    end
+
     local stillPending = {}
     for cls, list in pairs(byClass) do
         local prevCount = ItemSwap.lastInvCounts[cls]
@@ -2051,6 +2099,24 @@ function ItemSwap_DetectTickBody()
                 consumed = consumed + amt
                 i = i + 1
             end
+            -- Baseline only advances by what was actually explained this
+            -- tick - see the comment above nextInvCounts for why.
+            nextInvCounts[cls] = prevCount - consumed
+            if consumed >= decrease then
+                ItemSwap.unmatchedDecreaseSince[cls] = nil
+            else
+                local since = ItemSwap.unmatchedDecreaseSince[cls]
+                if not since then
+                    since = os.clock()
+                    ItemSwap.unmatchedDecreaseSince[cls] = since
+                end
+                if os.clock() - since >= ItemSwap.pendingTimeoutSec then
+                    -- Given up waiting - accept the real current count so
+                    -- this class doesn't wedge forever.
+                    nextInvCounts[cls] = nowCount
+                    ItemSwap.unmatchedDecreaseSince[cls] = nil
+                end
+            end
             -- Anything left in this class's list beyond what the decrease
             -- explained stays pending (same timeout rules as below).
             for j = i, #list do
@@ -2063,6 +2129,7 @@ function ItemSwap_DetectTickBody()
             -- pre-existing world clutter this player never had in
             -- inventory) - keep waiting, up to a short timeout, rather
             -- than giving up after just one tick.
+            ItemSwap.unmatchedDecreaseSince[cls] = nil
             for _, p in ipairs(list) do
                 if os.clock() - p.sinceClock < ItemSwap.pendingTimeoutSec then
                     stillPending[#stillPending + 1] = p
@@ -2072,7 +2139,30 @@ function ItemSwap_DetectTickBody()
     end
     ItemSwap.pendingItems = stillPending
 
-    ItemSwap.lastInvCounts = newCounts
+    -- Classes with a decrease but NO pending entity at all this tick (the
+    -- ground entity hasn't been scanned yet) - same hold-and-expire logic
+    -- as the partially-matched case above, just with nothing consumed yet.
+    for cls, prevCount in pairs(ItemSwap.lastInvCounts) do
+        if not byClass[cls] then
+            local nowCount = nextInvCounts[cls] or 0
+            if nowCount < prevCount then
+                local since = ItemSwap.unmatchedDecreaseSince[cls]
+                if not since then
+                    since = os.clock()
+                    ItemSwap.unmatchedDecreaseSince[cls] = since
+                end
+                if os.clock() - since < ItemSwap.pendingTimeoutSec then
+                    nextInvCounts[cls] = prevCount
+                else
+                    ItemSwap.unmatchedDecreaseSince[cls] = nil
+                end
+            else
+                ItemSwap.unmatchedDecreaseSince[cls] = nil
+            end
+        end
+    end
+
+    ItemSwap.lastInvCounts = nextInvCounts
     ItemSwap_ClaimWatchTick()
 end
 
@@ -2126,6 +2216,33 @@ function ItemSwap_DetectOff()
     ItemSwap.detectRunning = false
     System.LogAlways("[ITEMSWAP] drop detector OFF")
 end
+
+-- Revives a stalled Script.SetTimer chain WITHOUT touching pendingItems,
+-- seenItemIds, or lastInvCounts - unlike ItemSwap_DetectOn, which resets
+-- all three (correct for a genuine first-arm or reload, where old ground-
+-- entity references and inventory state really might be stale). The
+-- watchdog's "not armed" case is neither: confirmed live (2026-09-13) that
+-- the game itself pauses this chain while the inventory screen is open,
+-- and using the full On() to revive it was unconditionally wiping
+-- in-flight drop tracking every time - directly causing real,
+-- intermittent drop-detection failures for whatever was being dropped at
+-- that exact moment, since the reset can land in the middle of exactly
+-- that action. The chain being alive already, just stalled, is exactly
+-- what makes a gentle revive safe here: nothing about the tracked state
+-- is actually suspect, only the timer needs kicking. Reserved for the
+-- watchdog specifically - itemswap_start (full On()) still runs on every
+-- genuine load/reload.
+function ItemSwap_DetectKick()
+    ItemSwap.detectRunning = true
+    ItemSwap.detectGeneration = ItemSwap.detectGeneration + 1
+    local myGen = ItemSwap.detectGeneration
+    System.LogAlways(string.format("[ITEMSWAP] drop detector KICKED (interval=%dms, gen=%d)",
+        ItemSwap.detectIntervalMs, myGen))
+    Script.SetTimer(ItemSwap.detectIntervalMs, function() ItemSwap_DetectTick(myGen) end)
+end
+
+System.AddCCommand("itemswap_detect_kick", "ItemSwap_DetectKick()",
+    "ItemSwap: revive a stalled detect chain without resetting drop-tracking state")
 
 -- %LINE arrives as ONE string (everything after the command name), so this
 -- wrapper splits it into the 3 positional args ItemSwap_TestSpawn expects.
@@ -2198,6 +2315,25 @@ end
 
 System.AddCCommand("itemswap_start", "ItemSwap_Start()",
     "ItemSwap: start everything the mod needs (drop detector + marker animation)")
+
+-- Gentle equivalent of itemswap_start for the watchdog specifically: revives
+-- all three chains without the Off-then-1.5s-wait-then-On dance (needless
+-- now that every chain is generation-guarded - see ItemSwap_DetectTick's
+-- comment - so nothing is lost by skipping the wait) and, critically,
+-- without ItemSwap_DetectOn's destructive reset of pendingItems/
+-- seenItemIds/lastInvCounts. Confirmed live (2026-09-13) the watchdog's
+-- "not armed" case is neither a first-arm nor a reload - the game just
+-- paused these chains (e.g. inventory screen open) - so nothing about the
+-- tracked state is actually suspect, only the timers need kicking.
+function ItemSwap_KickAll()
+    ItemSwap_DetectKick()
+    ItemSwap_AnimKick()
+    ItemSwap_CooldownDisplayKick()
+    System.LogAlways("[ITEMSWAP] itemswap_kick_all: revived without resetting drop tracking")
+end
+
+System.AddCCommand("itemswap_kick_all", "ItemSwap_KickAll()",
+    "ItemSwap: revive stalled chains without resetting drop-tracking state (for the watchdog)")
 
 -- IMPORTANT, confirmed live (2026-09-07) - do NOT call ItemSwap_DetectOn()
 -- here at the bottom of the Startup script. It looks like it should work

@@ -276,9 +276,19 @@ logTail.LineRead += async line =>
         var armed = line[(armCheckIndex + armCheckTag.Length)..].Trim();
         if (!string.Equals(armed, "true", StringComparison.OrdinalIgnoreCase))
         {
-            Console.WriteLine("[agent] watchdog: mod not armed - rearming");
-            try { await rc.SendCommandAsync("itemswap_start"); }
-            catch (Exception ex) { Console.WriteLine($"[agent] watchdog rearm failed: {ex.Message}"); }
+            // itemswap_kick_all, not itemswap_start - confirmed live
+            // (2026-09-13) that this "not armed" case is neither a first-arm
+            // nor a reload (those are caught immediately by the log triggers
+            // above, which don't wait on this watchdog at all): it's the
+            // game itself pausing Script.SetTimer chains (e.g. the inventory
+            // screen being open), which itemswap_start's full reset
+            // misdiagnosed as needing a fresh baseline - destroying
+            // in-flight drop tracking for whatever was being dropped at
+            // that exact moment. The gentle kick revives the chains without
+            // touching any of that state.
+            Console.WriteLine("[agent] watchdog: mod not armed - kicking");
+            try { await rc.SendCommandAsync("itemswap_kick_all"); }
+            catch (Exception ex) { Console.WriteLine($"[agent] watchdog kick failed: {ex.Message}"); }
         }
         return;
     }
