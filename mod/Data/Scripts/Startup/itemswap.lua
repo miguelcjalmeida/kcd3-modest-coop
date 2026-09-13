@@ -2084,12 +2084,17 @@ end
 -- way to nudge the detector is resending this exact command, and with the
 -- flag stuck true that resend was silently ignored for the rest of the
 -- session - no error, no log line, pos/drop detection just dead. Treat the
--- flag as trustworthy only if a tick has genuinely run recently (a few
--- multiples of the tick interval - generous, since this only needs to catch
--- "the chain is gone", not police normal scheduling jitter).
+-- flag as trustworthy only if a tick has genuinely run recently. A flat 90s,
+-- not a small multiple of the tick interval - confirmed live (2026-09-13)
+-- that the game itself pauses Script.SetTimer chains while the inventory
+-- screen is open, which a tight multiple-of-interval threshold mistook for
+-- "the chain is gone" during perfectly ordinary browsing, triggering a full
+-- (and destructive - see ItemSwap.seenItemIds below) reset while the player
+-- was mid-drop. This only needs to catch a truly dead chain eventually, not
+-- police normal scheduling jitter or UI pauses.
 function ItemSwap_DetectOn()
     local alive = ItemSwap.detectRunning and ItemSwap.lastDetectTickClock
-        and (os.clock() - ItemSwap.lastDetectTickClock) < (ItemSwap.detectIntervalMs / 1000 * 4)
+        and (os.clock() - ItemSwap.lastDetectTickClock) < 90
     if alive then return end
     ItemSwap.detectRunning = true
     ItemSwap.detectGeneration = ItemSwap.detectGeneration + 1

@@ -451,14 +451,26 @@ _ = Task.Run(async () =>
             // so a chain killed this way reads "running" forever and the
             // watchdog would never know to rearm it. A staleness check on
             // the heartbeat is the only way to tell a genuinely dead chain
-            // from a merely idle one. 5s is comfortably above every chain's
-            // own interval (the slowest is detect, which also now carries
-            // time-sync - see itemswap.lua's ItemSwap.detectIntervalMs -
-            // ticking every 1.5s).
+            // from a merely idle one.
+            //
+            // 90s, not the original 5s - confirmed live (2026-09-13) that
+            // the game itself pauses Script.SetTimer chains while the
+            // inventory screen is open (a normal CryEngine behavior, not a
+            // bug), and 5s was routinely shorter than a real "what do I want
+            // to drop" browse. Every false "not armed" this produced sent
+            // itemswap_start, which unconditionally wipes the in-flight drop
+            // tracking (pendingItems/seenItemIds/the inventory baseline) via
+            // ItemSwap_DetectOn - directly causing real, intermittent
+            // drop-detection failures for whatever was being dropped at that
+            // exact moment. 90s comfortably covers ordinary inventory
+            // browsing; a genuinely dead chain still recovers, just a little
+            // slower - a real reload is caught immediately anyway via the
+            // ITEMSWAP-LOADED/"Loading saved game" log triggers above, which
+            // don't wait on this watchdog at all.
             await rc.SendLuaAsync(
                 "local ok, armed = pcall(function() " +
                 "local now = os.clock() " +
-                "local function alive(flag, clk) return flag == true and clk ~= nil and (now - clk) < 5 end " +
+                "local function alive(flag, clk) return flag == true and clk ~= nil and (now - clk) < 90 end " +
                 "return alive(ItemSwap.detectRunning, ItemSwap.lastDetectTickClock) " +
                 "and alive(ItemSwap.animRunning, ItemSwap.lastAnimTickClock) " +
                 "and alive(ItemSwap.cooldownDisplayRunning, ItemSwap.lastCooldownDisplayTickClock) end) " +
